@@ -8,6 +8,13 @@ from did_service import (init_did_db, validate_api_key, register_did,
                          sign_credential, request_registration,
                          verify_email_token, get_pending_registrations,
                          approve_registration)
+from digilocker_service import (create_digilocker_request,
+                                 get_request_status,
+                                 fetch_document,
+                                 download_and_hash,
+                                 revoke_access)
+
+
 
 
 ADMIN_KEY = os.getenv("ADMIN_KEY", "skillchain-admin-secret")
@@ -26,6 +33,72 @@ def normalize_and_hash(file_bytes: bytes) -> str:
     img.save(buffer, format="PNG")
     normalized = buffer.getvalue()
     return hashlib.sha256(normalized).hexdigest()
+
+
+@app.route("/digilocker/start", methods=["POST"])
+def digilocker_start():
+    """
+    Institution or user starts a DigiLocker verification.
+    Returns the URL to redirect the user to.
+    """
+    redirect_url = request.json.get(
+        "redirect_url",
+        "http://127.0.0.1:5000/digilocker/callback"
+    )
+    result = create_digilocker_request(redirect_url)
+    return jsonify(result)
+
+@app.route("/digilocker/callback", methods=["GET"])
+def digilocker_callback():
+    """
+    DigiLocker redirects here after user consents.
+    We check status and confirm consent was given.
+    """
+    request_id = request.args.get("id")
+    if not request_id:
+        return jsonify({"error": "Missing request id"}), 400
+
+    status = get_request_status(request_id)
+    if status["status"] != "authenticated":
+        return jsonify({"error": "User has not consented yet"}), 403
+
+    return jsonify({
+        "success": True,
+        "request_id": request_id,
+        "user": status["user"],
+        "message": "Consent received. Call /digilocker/verify to fetch and verify document."
+    })
+
+@app.route("/digilocker/verify", methods=["POST"])
+def digilocker_verify():
+    """
+    Fetch the document from DigiLocker, hash it, check Algorand.
+    This is the full verification flow.
+    """
+    data = request.get_json()
+    request_id = data.get("request_id")
+    doc_type   = data.get("doc_type", "DGDEG")
+    org_id     = data.get("org_id", "in.gov.cbse")
+
+    if not request_id:
+        return jsonify({"error": "request_id required"}), 400
+
+    doc = fetch_document(request_id, doc_type, org_id)
+    if not doc.get("file_url"):
+        return jsonify({"error": "Could not fetch document from DigiLocker"}), 500
+
+    cert_hash = download_and_hash(doc["file_url"])
+    result    = verify_hash(cert_hash)
+    
+    revoke_access(request_id)
+
+    return jsonify({
+        **result,
+        "source": "DigiLocker",
+        "government_verified": True,
+        "doc_type": doc_type,
+        "org_id": org_id
+    })
 
 @app.route("/")
 def index():
