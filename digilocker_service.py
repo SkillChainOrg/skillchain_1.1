@@ -114,3 +114,72 @@ def mock_digilocker_verify(cert_hash: str) -> dict:
         "government_verified": True,
         "mock": True
     }
+    
+def get_verified_name(request_id: str) -> str:
+    response = requests.get(
+        f"{BASE_URL}/api/digilocker/{request_id}",
+        headers=setu_headers()
+    )
+    data = response.json()
+    user = data.get("digilockerUserDetails", {})
+    return user.get("name", "")
+
+def verify_with_identity(request_id: str, doc_type: str, org_id: str) -> dict:
+    from algorand_service import verify_hash, get_anchored_name_hash
+    import hashlib
+    
+    doc = fetch_document(request_id, doc_type, org_id)
+    if not doc.get("file_url"):
+        return {"error": "Could not fetch document from DigiLocker"}
+
+    cert_hash = download_and_hash(doc["file_url"])
+    result = verify_hash(cert_hash)
+    
+    if not result.get("valid"):
+        revoke_access(request_id)
+        return {**result, "identity_verified": False}
+
+    verified_name = get_verified_name(request_id)
+    name_hash = hashlib.sha256(
+        verified_name.strip().lower().encode()
+    ).hexdigest()
+    
+    anchored_name_hash = get_anchored_name_hash(cert_hash)
+    
+    identity_verified = (
+        anchored_name_hash != "" and
+        name_hash == anchored_name_hash
+    )
+    
+    revoke_access(request_id)
+    
+    return {
+        **result,
+        "source": "DigiLocker",
+        "government_verified": True,
+        "identity_verified": identity_verified,
+        "identity_check": (
+            "Aadhaar name matches certificate holder"
+            if identity_verified
+            else "Identity could not be verified"
+        )
+    }
+    
+def download_and_hash(file_url: str) -> str:
+    response = requests.get(file_url, headers=setu_headers())
+    file_bytes = response.content
+    
+    img = Image.open(io.BytesIO(file_bytes))
+    exif = img.getexif()
+    exif.clear()
+    img = img.convert("RGB")
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    normalized = buffer.getvalue()
+    
+    cert_hash = hashlib.sha256(normalized).hexdigest()
+    
+    # explicitly delete from memory — never stored
+    del file_bytes, normalized, buffer
+    
+    return cert_hash

@@ -71,10 +71,6 @@ def digilocker_callback():
 
 @app.route("/digilocker/verify", methods=["POST"])
 def digilocker_verify():
-    """
-    Fetch the document from DigiLocker, hash it, check Algorand.
-    This is the full verification flow.
-    """
     data = request.get_json()
     request_id = data.get("request_id")
     doc_type   = data.get("doc_type", "DGDEG")
@@ -83,22 +79,9 @@ def digilocker_verify():
     if not request_id:
         return jsonify({"error": "request_id required"}), 400
 
-    doc = fetch_document(request_id, doc_type, org_id)
-    if not doc.get("file_url"):
-        return jsonify({"error": "Could not fetch document from DigiLocker"}), 500
-
-    cert_hash = download_and_hash(doc["file_url"])
-    result    = verify_hash(cert_hash)
-    
-    revoke_access(request_id)
-
-    return jsonify({
-        **result,
-        "source": "DigiLocker",
-        "government_verified": True,
-        "doc_type": doc_type,
-        "org_id": org_id
-    })
+    from digilocker_service import verify_with_identity
+    result = verify_with_identity(request_id, doc_type, org_id)
+    return jsonify(result)
 
 @app.route("/")
 def index():
@@ -127,6 +110,7 @@ def issue():
 
     file = request.files["certificate"]
     doc_type = request.form.get("doc_type", "academic")
+    holder_name = request.form.get("holder_name", "")
 
     if file.filename == "":
         return jsonify({"error": "Empty filename"}), 400
@@ -134,7 +118,7 @@ def issue():
     file_bytes = file.read()
     cert_hash = normalize_and_hash(file_bytes)
     signature = sign_credential(cert_hash)
-    tx_id = anchor_hash(cert_hash, doc_type)
+    tx_id = anchor_hash(cert_hash, doc_type, holder_name)
 
     return jsonify({
         "success": True,
@@ -142,6 +126,7 @@ def issue():
         "tx_id": tx_id,
         "issued_by": institution["institution"],
         "did": institution["did"],
+        "holder_name_hashed": True,
         "explorer_url": f"https://testnet.explorer.perawallet.app/tx/{tx_id}"
     })
 

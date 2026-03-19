@@ -7,10 +7,6 @@ from PIL import Image
 import io
 import hashlib
 
-def compute_hash(file_bytes):
-    normalized = normalize_image(file_bytes)
-    return hashlib.sha256(normalized).hexdigest()
-
 DB_PATH = "skillchain.db"
 
 def init_db():
@@ -35,17 +31,7 @@ def save_to_db(cert_hash: str, tx_id: str, doc_type: str, issued_at: str):
     conn.commit()
     conn.close()
     
-def normalize_image(file_bytes):
-    image = Image.open(io.BytesIO(file_bytes))
 
-    # Convert to standard format (removes metadata differences)
-    image = image.convert("RGB")
-
-    # Save in consistent PNG format
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-
-    return buffer.getvalue()
 
 def lookup_hash(cert_hash: str) -> str | None:
     conn = sqlite3.connect(DB_PATH)
@@ -77,14 +63,20 @@ def load_wallet():
     address = account.address_from_private_key(private_key)
     return private_key, address
 
-def anchor_hash(cert_hash: str, doc_type: str = "academic") -> str:
+def anchor_hash(cert_hash: str, doc_type: str = "academic", holder_name: str = "") -> str:
     private_key, address = load_wallet()
     client = get_algod_client()
 
     issued_at = time.strftime("%Y-%m-%d")
+    
+    name_hash = hashlib.sha256(
+        holder_name.strip().lower().encode()
+    ).hexdigest() if holder_name else ""
+    
     note_data = {
         "hash": cert_hash,
         "doc_type": doc_type,
+        "name_hash": name_hash,
         "issued_at": issued_at
     }
     note_bytes = ("skillchain:j" + json.dumps(note_data)).encode()
@@ -130,6 +122,22 @@ def verify_hash(cert_hash: str) -> dict:
             "explorer_url": f"https://testnet.explorer.perawallet.app/tx/{txn['id']}"
         }
     return {"valid": False, "reason": "Hash mismatch"}
+
+def get_anchored_name_hash(cert_hash: str) -> str:
+    tx_id = lookup_hash(cert_hash)
+    if not tx_id:
+        return ""
+    
+    client = get_indexer_client()
+    response = client.transaction(tx_id)
+    txn = response.get("transaction", {})
+    
+    note_raw = txn.get("note", "")
+    note_decoded = base64.b64decode(note_raw).decode()
+    note_json = note_decoded.replace("skillchain:j", "")
+    data = json.loads(note_json)
+    
+    return data.get("name_hash", "")
 
 if __name__ == "__main__":
     init_db()
