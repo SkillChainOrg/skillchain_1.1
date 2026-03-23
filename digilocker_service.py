@@ -1,6 +1,7 @@
 import os, requests, hashlib, io
 from PIL import Image
 from dotenv import load_dotenv
+import fitz
 
 load_dotenv()
 
@@ -74,21 +75,42 @@ def fetch_document(request_id: str, doc_type: str, org_id: str) -> dict:
 
 def download_and_hash(file_url: str) -> str:
     """
-    Step 4 — download the file from DigiLocker, normalize, hash.
-    This hash is what we check against Algorand.
+    Downloads document from DigiLocker, normalises to PNG, hashes, discards.
+    Never stored. Handles both PDF and image formats.
+    DPDP compliance: document lives in memory only, deleted after hashing.
     """
-    response = requests.get(file_url, headers=setu_headers())
+    response = requests.get(file_url, headers=setu_headers(), timeout=15)
+    response.raise_for_status()
     file_bytes = response.content
-    
-    img = Image.open(io.BytesIO(file_bytes))
-    exif = img.getexif()
-    exif.clear()
-    img = img.convert("RGB")
-    buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    normalized = buffer.getvalue()
-    
-    return hashlib.sha256(normalized).hexdigest()
+    content_type = response.headers.get("Content-Type", "")
+
+    try:
+        if "pdf" in content_type or file_bytes[:4] == b"%PDF":
+            # PDF path — render page 1 to image, then normalise
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            page = doc.load_page(0)
+            # Render at 150 DPI — consistent resolution = consistent hash
+            mat = fitz.Matrix(150/72, 150/72)
+            pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+            img_bytes = pix.tobytes("png")
+            doc.close()
+            del pix
+        else:
+            # Image path — existing PIL normalisation
+            img = Image.open(io.BytesIO(file_bytes))
+            img.getexif().clear()
+            img = img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            img_bytes = buf.getvalue()
+            del buf
+
+        cert_hash = hashlib.sha256(img_bytes).hexdigest()
+    finally:
+        # Always discard — even on exception
+        del file_bytes, img_bytes
+
+    return cert_hash
 
 def revoke_access(request_id: str) -> bool:
     """
