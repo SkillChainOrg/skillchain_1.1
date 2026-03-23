@@ -13,9 +13,16 @@ from digilocker_service import (create_digilocker_request,
                                  fetch_document,
                                  download_and_hash,
                                  revoke_access)
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
+app = Flask(__name__)
 
-
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["100 per day"]
+)
 
 ADMIN_KEY = os.getenv("ADMIN_KEY", "skillchain-admin-secret")
 
@@ -70,6 +77,7 @@ def digilocker_callback():
     })
 
 @app.route("/digilocker/verify", methods=["POST"])
+@limiter.limit("20 per minute")
 def digilocker_verify():
     data = request.get_json()
     request_id = data.get("request_id")
@@ -96,6 +104,7 @@ def register():
     return jsonify(result)
 
 @app.route("/issue", methods=["POST"])
+@limiter.limit("10 per minute")
 def issue():
     api_key = request.headers.get("X-API-Key")
     if not api_key:
@@ -131,6 +140,7 @@ def issue():
     })
 
 @app.route("/verify", methods=["POST"])
+@limiter.limit("30 per minute")
 def verify():
     if "certificate" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400

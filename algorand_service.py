@@ -25,7 +25,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_to_db(cert_hash: str, tx_id: str, doc_type: str, issued_at: str):
+def save_to_db(cert_hash, tx_id, doc_type, issued_at, ipfs_cid=None):
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
         "INSERT OR REPLACE INTO certificates VALUES (?, ?, ?, ?)",
@@ -120,14 +120,13 @@ def anchor_hash(cert_hash: str, doc_type: str, holder_name: str,
 from ipfs_service import fetch_certificate_metadata
 
 def verify_hash(cert_hash: str) -> dict:
-    # Try SQLite first (fast path)
     tx_id = lookup_hash(cert_hash)
 
     if tx_id:
-        # Fast path: confirm on Algorand
         client = get_indexer_client()
         response = client.transaction(tx_id)
         txn = response.get("transaction", {})
+
         note_raw = txn.get("note", "")
         note_decoded = base64.b64decode(note_raw).decode()
         data = json.loads(note_decoded.replace("skillchain:j", ""))
@@ -137,32 +136,48 @@ def verify_hash(cert_hash: str) -> dict:
 
         ipfs_cid = data.get("cid")
         issuer_info = {}
+
         if ipfs_cid:
             try:
-                # Fetch metadata from IPFS and verify signature
                 meta = fetch_certificate_metadata(ipfs_cid)
+
                 issuer_info = {
                     "issued_by": meta.get("issued_by"),
                     "issuer_did": meta.get("issuer_did"),
                     "ipfs_cid": ipfs_cid,
                     "ipfs_url": f"https://gateway.pinata.cloud/ipfs/{ipfs_cid}"
                 }
-                # TODO: verify signature here (see earlier analysis)
+
+                # ✅ FIX: keep this INSIDE function
+                from did_service import verify_provenance
+
+                signature = meta.get("signature", "")
+                _, issuer_address = load_wallet()
+
+                if signature:
+                    provenance = verify_provenance(
+                        issuer_address, cert_hash, signature
+                    )
+                    issuer_info["signature_valid"] = provenance["verified"]
+                    issuer_info["signature_institution"] = provenance.get("institution")
+                else:
+                    issuer_info["signature_valid"] = False
+                    issuer_info["signature_warning"] = "No signature in metadata — legacy certificate"
+
             except Exception:
-                pass  # degraded but not broken
+                pass
 
         return {
             "valid": True,
-            "tx_id": txn["id"],
-            "confirmed_round": txn["confirmed-round"],
-            "doc_type": data.get("doc_type"),
-            "issued_at": data.get("issued_at"),
-            "explorer_url": f"https://testnet.explorer.perawallet.app/tx/{txn['id']}",
-            **issuer_info
+            "signature_valid": issuer_info.get("signature_valid", False),
+            "tx_id": txn.get("id"),
+            "confirmed_round": txn.get("confirmed-round"),
+            "issued_by": issuer_info.get("issued_by"),
+            "issuer_did": issuer_info.get("issuer_did"),
+            "ipfs_cid": ipfs_cid,
         }
 
-    # No SQLite entry — search Algorand indexer directly
-    # This is the fully serverless verification path
+    # fallback
     return _verify_via_indexer(cert_hash)
 
 
