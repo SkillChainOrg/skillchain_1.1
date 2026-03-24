@@ -2,6 +2,7 @@ import os, requests, hashlib, io
 from PIL import Image
 from dotenv import load_dotenv
 import fitz
+import xml.etree.ElementTree as ET
 
 load_dotenv()
 
@@ -50,8 +51,8 @@ def get_request_status(request_id: str) -> dict:
         "request_id": request_id
     }
 
-def fetch_document(request_id: str, doc_type: str, org_id: str) -> dict:
-    """
+"""def fetch_document(request_id: str, doc_type: str, org_id: str) -> dict:
+    
     Step 3 — fetch the actual document after user has consented.
     Returns a file URL to download.
     
@@ -60,7 +61,7 @@ def fetch_document(request_id: str, doc_type: str, org_id: str) -> dict:
     CBSE marksheet:         docType=CBSMK, orgId=in.gov.cbse  
     PAN card:               docType=PANCR, orgId=in.gov.income-tax
     Driving licence:        docType=DRVLC, orgId varies by state RTO
-    """
+    
     response = requests.post(
         f"{BASE_URL}/api/digilocker/{request_id}/fetch",
         headers=setu_headers(),
@@ -71,6 +72,31 @@ def fetch_document(request_id: str, doc_type: str, org_id: str) -> dict:
         "file_url": data.get("fileUrl"),
         "doc_type": doc_type,
         "org_id": org_id
+    }"""
+
+
+def fetch_document_xml(request_id: str, doc_type: str, org_id: str) -> dict:
+    """
+    Fetches the structured XML version of the document.
+    Returns parsed fields — no PDF download needed.
+    """
+    response = requests.post(
+        f"{BASE_URL}/api/digilocker/{request_id}/fetch",
+        headers={**setu_headers(), "Accept": "application/xml"},
+        json={"docType": doc_type, "orgId": org_id}
+    )
+    
+    xml_content = response.text
+    root = ET.fromstring(xml_content)
+    
+    # Parse name from XML structure
+    name_element = root.find(".//Candidate/Name")
+    roll_element = root.find(".//Candidate/RollNo")
+    
+    return {
+        "name": name_element.text.strip() if name_element is not None else "",
+        "roll_number": roll_element.text.strip() if roll_element is not None else "",
+        "raw_xml": xml_content  # keep for hashing if needed
     }
 
 def download_and_hash(file_url: str) -> str:
@@ -146,11 +172,11 @@ def get_verified_name(request_id: str) -> str:
     user = data.get("digilockerUserDetails", {})
     return user.get("name", "")
 
-def verify_with_identity(request_id: str, doc_type: str, org_id: str) -> dict:
+def verify_with_identity(request_id: str, doc_type: str, org_id: str):
     from algorand_service import verify_hash, get_anchored_name_hash
     import hashlib
     
-    doc = fetch_document(request_id, doc_type, org_id)
+    doc = fetch_document_xml(request_id, doc_type, org_id)
     if not doc.get("file_url"):
         return {"error": "Could not fetch document from DigiLocker"}
 

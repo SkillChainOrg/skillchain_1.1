@@ -4,6 +4,8 @@ from did_service import init_did_db, validate_api_key, register_did, sign_creden
 from algorand_service import init_db, anchor_hash, verify_hash
 import hashlib, io
 import os
+import secrets 
+import zipfile
 from did_service import (init_did_db, validate_api_key, register_did,
                          sign_credential, request_registration,
                          verify_email_token, get_pending_registrations,
@@ -15,6 +17,7 @@ from digilocker_service import (create_digilocker_request,
                                  revoke_access)
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from queue_service import (queue_batch, get_batch_status)
 
 app = Flask(__name__)
 
@@ -40,6 +43,73 @@ def normalize_and_hash(file_bytes: bytes) -> str:
     img.save(buffer, format="PNG")
     normalized = buffer.getvalue()
     return hashlib.sha256(normalized).hexdigest()
+
+# app.py
+@app.route("/issue/batch", methods=["POST"])
+def issue_batch():
+    api_key = request.headers.get("X-API-Key")
+    institution = validate_api_key(api_key)
+    if not institution:
+        return jsonify({"error": "Invalid API key"}), 403
+
+    if "certificates" not in request.files:
+        return jsonify({"error": "No zip file"}), 400
+
+    zip_file = request.files["certificates"]
+    doc_type = request.form.get("doc_type", "academic")
+
+    batch_id = secrets.token_hex(8)
+    jobs = []
+
+    # All hashing happens HERE — synchronously, in memory, before returning
+    with zipfile.ZipFile(zip_file) as zf:
+        cert_files = [f for f in zf.namelist()
+                      if f.endswith(('.png', '.jpg', '.jpeg', '.pdf'))
+                      and not f.startswith('__MACOSX')]
+
+        if len(cert_files) > 500:
+            return jsonify({"error": "Max 500 per batch"}), 400
+
+        for filename in cert_files:
+            try:
+                file_bytes = zf.read(filename)          # in memory only
+                cert_hash = normalize_and_hash(file_bytes)  # hash immediately
+                signature = sign_credential(cert_hash)  # sign immediately
+                del file_bytes                          # explicitly discard
+                
+                # Only safe data enters the queue
+                jobs.append({
+                    "cert_hash": cert_hash,   # hash, not file
+                    "signature": signature,   # signature, not file
+                    "filename": filename,     # just for the report
+                    "doc_type": doc_type
+                })
+            except Exception as e:
+                jobs.append({
+                    "filename": filename,
+                    "error": str(e),
+                    "status": "hash_failed"
+                })
+
+    # Queue contains ONLY hashes — no files, no PII
+    queue_batch(batch_id, jobs, institution)
+
+    return jsonify({
+        "batch_id": batch_id,
+        "queued": len([j for j in jobs if "cert_hash" in j]),
+        "failed_at_hash": len([j for j in jobs if "error" in j]),
+        "status_url": f"/batch/status/{batch_id}",
+        "message": "Certificates hashed and queued for Algorand anchoring"
+    })
+    
+@app.route("/batch/status/<batch_id>", methods=["GET"])
+def batch_status(batch_id):
+    api_key = request.headers.get("X-API-Key")
+    if not validate_api_key(api_key):
+        return jsonify({"error": "Unauthorized"}), 403
+    
+    status = get_batch_status(batch_id)
+    return jsonify(status)
 
 
 @app.route("/digilocker/start", methods=["POST"])
