@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 from algosdk import account, mnemonic as mn, transaction
 from algosdk.v2client import algod, indexer
-from ipfs_service import pin_certificate_metadata
+from ipfs_service import pin_certificate_metadata,fetch_certificate_metadata,pin_with_retry
 import os, json, base64, time
 import sqlite3
 from PIL import Image
@@ -12,6 +12,7 @@ import hmac
 
 DB_PATH = "skillchain.db"
 
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
@@ -19,7 +20,8 @@ def init_db():
             cert_hash TEXT PRIMARY KEY,
             tx_id     TEXT NOT NULL,
             doc_type  TEXT,
-            issued_at TEXT
+            issued_at TEXT,
+            ipfs_cid  TEXT
         )
     """)
     conn.commit()
@@ -28,12 +30,11 @@ def init_db():
 def save_to_db(cert_hash, tx_id, doc_type, issued_at, ipfs_cid=None):
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
-        "INSERT OR REPLACE INTO certificates VALUES (?, ?, ?, ?)",
-        (cert_hash, tx_id, doc_type, issued_at)
+        "INSERT OR REPLACE INTO certificates VALUES (?, ?, ?, ?, ?)",
+        (cert_hash, tx_id, doc_type, issued_at, ipfs_cid)  # ← now stored
     )
     conn.commit()
     conn.close()
-    
 
 
 def lookup_hash(cert_hash: str) -> str | None:
@@ -66,144 +67,119 @@ def load_wallet():
     address = account.address_from_private_key(private_key)
     return private_key, address
 
-def anchor_hash(cert_hash: str, doc_type: str, holder_name: str,
+def anchor_hash(cert_hash: str, doc_type: str,
                 institution: dict, signature: str) -> dict:
     private_key, address = load_wallet()
     client = get_algod_client()
     issued_at = time.strftime("%Y-%m-%d")
 
-    name_hash = hmac.new(
-        os.environ["NAME_HMAC_KEY"].encode(),
-        holder_name.strip().lower().encode(),
-        hashlib.sha256
-    ).hexdigest() if holder_name else ""
-
-    # Build the metadata — no PII
+    # Build IPFS metadata — all the rich data lives here
     metadata = {
         "version": "1.0",
-        "cert_hash": cert_hash,
+        "cert_hash": cert_hash,       # full hash in IPFS
         "doc_type": doc_type,
         "issued_by": institution["institution"],
         "issuer_did": institution["did"],
         "issued_at": issued_at,
-        "name_hash": name_hash,
         "signature": signature
     }
 
-    # Pin to IPFS first, get CID
-    ipfs_cid = pin_certificate_metadata(metadata)
+    # Retry-wrapped pin
+    ipfs_cid = pin_with_retry(metadata)
 
-    # Anchor CID + hash on Algorand
-    note_data = {
-        "sc": "1.0",           # skillchain version marker
-        "hash": cert_hash,
-        "cid": ipfs_cid,       # NEW: IPFS content address
-        "doc_type": doc_type,
-        "issued_at": issued_at
-    }
-    note_bytes = ("skillchain:j" + json.dumps(note_data)).encode()
-    assert len(note_bytes) <= 1024, f"Note too long: {len(note_bytes)} bytes"
+    # Note contains ONLY the CID — nothing else needed
+    note_data = {"sc": "1", "cid": ipfs_cid}
+    note_bytes = json.dumps(note_data).encode()
+
+    # This will always be ~35 bytes — can never overflow 1024
+    assert len(note_bytes) < 100, f"Unexpected note size: {len(note_bytes)}"
 
     params = client.suggested_params()
     txn = transaction.PaymentTxn(
-        sender=address, sp=params, receiver=address,
-        amt=0, note=note_bytes
+        sender=address, sp=params,
+        receiver=address, amt=0, note=note_bytes
     )
     signed_txn = txn.sign(private_key)
     tx_id = client.send_transaction(signed_txn)
     transaction.wait_for_confirmation(client, tx_id, 4)
 
-    save_to_db(cert_hash, tx_id, doc_type, issued_at, ipfs_cid)  # store CID too
+    save_to_db(cert_hash, tx_id, doc_type, issued_at, ipfs_cid)
     return {"tx_id": tx_id, "ipfs_cid": ipfs_cid}
-
-# Updated verify_hash — SQLite optional, IPFS path always works
-from ipfs_service import fetch_certificate_metadata
 
 def verify_hash(cert_hash: str) -> dict:
     tx_id = lookup_hash(cert_hash)
 
     if tx_id:
         client = get_indexer_client()
-        response = client.transaction(tx_id)
-        txn = response.get("transaction", {})
-
+        txn = client.transaction(tx_id).get("transaction", {})
         note_raw = txn.get("note", "")
-        note_decoded = base64.b64decode(note_raw).decode()
-        data = json.loads(note_decoded.replace("skillchain:j", ""))
+        note = json.loads(base64.b64decode(note_raw).decode())
 
-        if data.get("hash") != cert_hash:
-            return {"valid": False, "reason": "Hash mismatch"}
+        ipfs_cid = note.get("cid")
+        if not ipfs_cid:
+            return {"valid": False, "reason": "Malformed note — no CID"}
 
-        ipfs_cid = data.get("cid")
-        issuer_info = {}
+        # All verification now happens against IPFS data
+        meta = fetch_certificate_metadata(ipfs_cid)  # gateway fallback chain
 
-        if ipfs_cid:
-            try:
-                meta = fetch_certificate_metadata(ipfs_cid)
+        if meta.get("cert_hash") != cert_hash:
+            return {"valid": False, "reason": "IPFS hash mismatch — data tampered"}
 
-                issuer_info = {
-                    "issued_by": meta.get("issued_by"),
-                    "issuer_did": meta.get("issuer_did"),
-                    "ipfs_cid": ipfs_cid,
-                    "ipfs_url": f"https://gateway.pinata.cloud/ipfs/{ipfs_cid}"
-                }
-
-                # ✅ FIX: keep this INSIDE function
-                from did_service import verify_provenance
-
-                signature = meta.get("signature", "")
-                _, issuer_address = load_wallet()
-
-                if signature:
-                    provenance = verify_provenance(
-                        issuer_address, cert_hash, signature
-                    )
-                    issuer_info["signature_valid"] = provenance["verified"]
-                    issuer_info["signature_institution"] = provenance.get("institution")
-                else:
-                    issuer_info["signature_valid"] = False
-                    issuer_info["signature_warning"] = "No signature in metadata — legacy certificate"
-
-            except Exception:
-                pass
+        # Verify signature
+        from did_service import verify_provenance
+        _, issuer_address = load_wallet()
+        provenance = verify_provenance(
+            issuer_address,
+            cert_hash,
+            meta.get("signature", "")
+        )
 
         return {
             "valid": True,
-            "signature_valid": issuer_info.get("signature_valid", False),
-            "tx_id": txn.get("id"),
-            "confirmed_round": txn.get("confirmed-round"),
-            "issued_by": issuer_info.get("issued_by"),
-            "issuer_did": issuer_info.get("issuer_did"),
+            "signature_valid": provenance["verified"],
+            "tx_id": txn["id"],
+            "confirmed_round": txn["confirmed-round"],
+            "issued_by": meta.get("issued_by"),
+            "issuer_did": meta.get("issuer_did"),
+            "doc_type": meta.get("doc_type"),
+            "issued_at": meta.get("issued_at"),
             "ipfs_cid": ipfs_cid,
+            "ipfs_url": f"https://gateway.pinata.cloud/ipfs/{ipfs_cid}",
+            "explorer_url": f"https://testnet.explorer.perawallet.app/tx/{txn['id']}"
         }
 
-    # fallback
     return _verify_via_indexer(cert_hash)
 
 
 def _verify_via_indexer(cert_hash: str) -> dict:
-    """Searches Algorand indexer for the cert_hash. Works even if DB is wiped."""
     client = get_indexer_client()
     _, address = load_wallet()
     try:
         txns = client.search_transactions(
             address=address,
-            note_prefix="skillchain:j".encode()
+            note_prefix=b'{"sc":'      # matches new note format
         ).get("transactions", [])
 
         for txn in txns:
             note_raw = txn.get("note", "")
             try:
-                note_decoded = base64.b64decode(note_raw).decode()
-                data = json.loads(note_decoded.replace("skillchain:j", ""))
-                if data.get("hash") == cert_hash:
+                note = json.loads(base64.b64decode(note_raw).decode())
+                ipfs_cid = note.get("cid")
+                if not ipfs_cid:
+                    continue
+                
+                # Fetch from IPFS and check cert_hash
+                meta = fetch_certificate_metadata(ipfs_cid)
+                if meta.get("cert_hash") == cert_hash:
                     return {
                         "valid": True,
                         "tx_id": txn["id"],
                         "confirmed_round": txn["confirmed-round"],
-                        "doc_type": data.get("doc_type"),
-                        "issued_at": data.get("issued_at"),
-                        "source": "algorand_indexer",
+                        "issued_by": meta.get("issued_by"),
+                        "doc_type": meta.get("doc_type"),
+                        "issued_at": meta.get("issued_at"),
+                        "ipfs_cid": ipfs_cid,
+                        "source": "algorand_indexer_fallback",
                         "explorer_url": f"https://testnet.explorer.perawallet.app/tx/{txn['id']}"
                     }
             except Exception:
