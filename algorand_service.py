@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from algosdk import account, mnemonic as mn, transaction
+from algosdk import transaction  # account/mnemonic removed: private keys handled solely by signing_service
 from algosdk.v2client import algod, indexer
 from ipfs_service import pin_certificate_metadata,fetch_certificate_metadata,pin_with_retry
 import os, json, base64, time
@@ -8,6 +8,10 @@ from PIL import Image
 import io
 import hashlib
 import hmac
+
+# Security: all private-key operations are routed through signing_service.
+# This module never holds or passes a raw private key.
+from signing_service import sign_transaction, get_issuer_address
 
 
 DB_PATH = "skillchain.db"
@@ -59,17 +63,12 @@ def get_algod_client():
 def get_indexer_client():
     return indexer.IndexerClient(INDEXER_TOKEN, INDEXER_URL)
 
-def load_wallet():
-    phrase = os.getenv("MNEMONIC")
-    if not phrase:
-        raise ValueError("MNEMONIC not set in .env")
-    private_key = mn.to_private_key(phrase)
-    address = account.address_from_private_key(private_key)
-    return private_key, address
 
 def anchor_hash(cert_hash: str, doc_type: str,
                 institution: dict, signature: str) -> dict:
-    private_key, address = load_wallet()
+    # Security: address is public data; private key never enters this scope.
+    # Signing is fully delegated to signing_service (fetch → sign → delete).
+    address = get_issuer_address()
     client = get_algod_client()
     issued_at = time.strftime("%Y-%m-%d")
 
@@ -99,7 +98,8 @@ def anchor_hash(cert_hash: str, doc_type: str,
         sender=address, sp=params,
         receiver=address, amt=0, note=note_bytes
     )
-    signed_txn = txn.sign(private_key)
+    # Security: sign_transaction fetches key from Vault, signs, deletes key — all in one scope.
+    signed_txn = sign_transaction(txn)
     tx_id = client.send_transaction(signed_txn)
     transaction.wait_for_confirmation(client, tx_id, 4)
 
@@ -125,9 +125,9 @@ def verify_hash(cert_hash: str) -> dict:
         if meta.get("cert_hash") != cert_hash:
             return {"valid": False, "reason": "IPFS hash mismatch — data tampered"}
 
-        # Verify signature
+        # Verify signature — only the public address is needed here
         from did_service import verify_provenance
-        _, issuer_address = load_wallet()
+        issuer_address = get_issuer_address()
         provenance = verify_provenance(
             issuer_address,
             cert_hash,
@@ -153,7 +153,8 @@ def verify_hash(cert_hash: str) -> dict:
 
 def _verify_via_indexer(cert_hash: str) -> dict:
     client = get_indexer_client()
-    _, address = load_wallet()
+    # Security: only the public address is needed for indexer lookup
+    address = get_issuer_address()
     try:
         txns = client.search_transactions(
             address=address,
@@ -207,6 +208,6 @@ def get_anchored_name_hash(cert_hash: str) -> str:
 
 if __name__ == "__main__":
     init_db()
-    _, address = load_wallet()
+    address = get_issuer_address()
     print(f"Wallet ready: {address}")
     print("DB initialised.")

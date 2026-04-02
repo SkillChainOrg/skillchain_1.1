@@ -1,7 +1,6 @@
-from algosdk import account, mnemonic as mn, transaction
 from algosdk.v2client import algod, indexer
 from algosdk import encoding
-from nacl.signing import SigningKey
+from nacl.signing import VerifyKey
 from nacl.encoding import RawEncoder
 from dotenv import load_dotenv
 from email.mime.text import MIMEText
@@ -15,6 +14,10 @@ def generate_api_key() -> str:
 
 load_dotenv()
 
+# Security: signing_service is the sole authority for private key access.
+# This module only uses the public address — never a private key.
+from signing_service import get_issuer_address
+
 ALGOD_URL     = os.getenv("ALGOD_URL", "https://testnet-api.algonode.cloud")
 INDEXER_URL   = os.getenv("INDEXER_URL", "https://testnet-idx.algonode.cloud")
 ALGOD_TOKEN   = ""
@@ -27,13 +30,6 @@ def get_algod_client():
 def get_indexer_client():
     return indexer.IndexerClient(INDEXER_TOKEN, INDEXER_URL)
 
-def load_wallet():
-    phrase = os.getenv("MNEMONIC")
-    if not phrase:
-        raise ValueError("MNEMONIC not set in .env")
-    private_key = mn.to_private_key(phrase)
-    address = account.address_from_private_key(private_key)
-    return private_key, address
 
 import secrets, smtplib
 from email.mime.text import MIMEText
@@ -154,14 +150,16 @@ def validate_api_key(api_key: str) -> dict | None:
     return None
 
 def register_did(institution_name: str, domain: str = "") -> dict:
-    private_key, address = load_wallet()
-    
+    # Security: only the public address is needed to build the DID.
+    # Private key never enters this scope.
+    address = get_issuer_address()
+
     # Create a deterministic institution-specific suffix
     # This makes each DID unique without needing separate wallets
     inst_suffix = hashlib.sha256(
         institution_name.strip().lower().encode()
     ).hexdigest()[:16]
-    
+
     did = f"did:algo:testnet:{address}:{inst_suffix}"
     
 def validate_api_key(api_key: str) -> dict | None:
@@ -176,12 +174,12 @@ def validate_api_key(api_key: str) -> dict | None:
     return None
 
 def sign_credential(cert_hash: str) -> str:
-    private_key, _ = load_wallet()
-    private_key_bytes = base64.b64decode(private_key)[:32]
-    signing_key = SigningKey(private_key_bytes, encoder=RawEncoder)
-    signed = signing_key.sign(cert_hash.encode(), encoder=RawEncoder)
-    signature = base64.b64encode(signed.signature).decode()
-    return signature
+    # Security: delegates entirely to signing_service.
+    # The private key is fetched from Vault (or MNEMONIC in dev mode),
+    # used for signing, and deleted from memory — all within signing_service's scope.
+    # No key bytes enter this function.
+    from signing_service import sign_credential_hash
+    return sign_credential_hash(cert_hash)
 
 def get_did_for_address(address: str) -> dict | None:
     conn = sqlite3.connect(DB_PATH)
@@ -204,16 +202,12 @@ def verify_provenance(address: str, cert_hash: str, signature: str) -> dict:
         }
 
     try:
-        private_key, wallet_address = load_wallet()
-        if wallet_address != address:
-            return {
-                "verified": False,
-                "reason": "Transaction not signed by registered institution"
-            }
-
-        private_key_bytes = base64.b64decode(private_key)[:32]
-        signing_key = SigningKey(private_key_bytes, encoder=RawEncoder)
-        verify_key = signing_key.verify_key
+        # Security: the Ed25519 public key is recovered directly from the Algorand
+        # address via encoding.decode_address() — no private key required.
+        # In Algorand, an address encodes the raw 32-byte Ed25519 public key plus
+        # a 4-byte checksum; decode_address() strips the checksum and returns the key.
+        public_key_bytes = encoding.decode_address(address)  # 32 bytes, non-secret
+        verify_key = VerifyKey(public_key_bytes, encoder=RawEncoder)
         sig_bytes = base64.b64decode(signature)
         verify_key.verify(cert_hash.encode(), sig_bytes, encoder=RawEncoder)
 
@@ -241,6 +235,6 @@ if __name__ == "__main__":
     print(f"Signature: {signature[:40]}...")
 
     print("\nTesting provenance verification...")
-    _, address = load_wallet()
+    address = get_issuer_address()  # public address only — no private key
     provenance = verify_provenance(address, test_hash, signature)
     print(json.dumps(provenance, indent=2))
