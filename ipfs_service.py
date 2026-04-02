@@ -1,10 +1,22 @@
 # ipfs_service.py
 import requests, json, os
+import time
 from dotenv import load_dotenv
+
 
 load_dotenv()
 PINATA_JWT = os.getenv("PINATA_JWT")
 
+def pin_with_retry(metadata: dict, retries: int = 3) -> str:
+    last_error = None
+    for attempt in range(retries):
+        try:
+            return pin_certificate_metadata(metadata)
+        except Exception as e:
+            last_error = e
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)  # 1s, 2s backoff
+    raise RuntimeError(f"IPFS pin failed after {retries} attempts: {last_error}")
 def pin_certificate_metadata(metadata: dict) -> str:
     """
     Pins the certificate metadata JSON to IPFS via Pinata.

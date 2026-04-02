@@ -3,10 +3,11 @@ from algosdk.v2client import algod, indexer
 from algosdk import encoding
 from nacl.signing import SigningKey
 from nacl.encoding import RawEncoder
-import os, json, base64, time, sqlite3
 from dotenv import load_dotenv
-import secrets,smtplib
 from email.mime.text import MIMEText
+import secrets,smtplib
+import os, json, base64, time, sqlite3
+import hashlib
 
 def generate_api_key() -> str:
     return secrets.token_hex(32)
@@ -154,47 +155,15 @@ def validate_api_key(api_key: str) -> dict | None:
 
 def register_did(institution_name: str, domain: str = "") -> dict:
     private_key, address = load_wallet()
-    client = get_algod_client()
-
-    did = f"did:algo:testnet:{address}"
-    public_key = encoding.encode_address(encoding.decode_address(address))
-    api_key = generate_api_key()
-
-    did_document = {
-        "id": did,
-        "institution": institution_name,
-        "domain": domain,
-        "publicKey": public_key,
-        "created": time.strftime("%Y-%m-%dT%H:%M:%SZ")
-    }
-
-    note_bytes = ("skillchain-did:j" + json.dumps(did_document)).encode()
-    params = client.suggested_params()
-    txn = transaction.PaymentTxn(
-        sender=address, sp=params,
-        receiver=address, amt=0, note=note_bytes
-    )
-    signed_txn = txn.sign(private_key)
-    tx_id = client.send_transaction(signed_txn)
-    transaction.wait_for_confirmation(client, tx_id, 4)
-
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT OR REPLACE INTO did_registry VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (address, did, institution_name, public_key, tx_id, api_key, domain, time.strftime("%Y-%m-%d"))
-    )
-    conn.commit()
-    conn.close()
-
-    return {
-        "did": did,
-        "institution": institution_name,
-        "domain": domain,
-        "address": address,
-        "tx_id": tx_id,
-        "api_key": api_key,
-        "explorer_url": f"https://testnet.explorer.perawallet.app/tx/{tx_id}"
-    }
+    
+    # Create a deterministic institution-specific suffix
+    # This makes each DID unique without needing separate wallets
+    inst_suffix = hashlib.sha256(
+        institution_name.strip().lower().encode()
+    ).hexdigest()[:16]
+    
+    did = f"did:algo:testnet:{address}:{inst_suffix}"
+    
 def validate_api_key(api_key: str) -> dict | None:
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
