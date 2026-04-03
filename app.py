@@ -125,7 +125,7 @@ def issue_batch():
             try:
                 file_bytes = zf.read(filename)
                 cert_hash  = normalize_and_hash(file_bytes)
-                signature  = sign_credential(cert_hash, institution_id=inst_id)
+                signature = sign_credential(cert_hash)
                 del file_bytes
 
                 jobs.append({
@@ -210,15 +210,6 @@ def index():
     return render_template("index.html")
 
 
-@app.route("/register", methods=["POST"])
-def register():
-    data = request.get_json()
-    if not data or "institution_name" not in data:
-        return jsonify({"error": "institution_name required"}), 400
-    result = register_did(data["institution_name"])
-    return jsonify(result)
-
-
 @app.route("/issue", methods=["POST"])
 @limiter.limit("10 per minute")
 def issue():
@@ -244,7 +235,7 @@ def issue():
         else None
     )
 
-    signature = sign_credential(cert_hash, institution_id=inst_id)
+    signature = sign_credential(cert_hash)
     result    = anchor_hash(cert_hash, doc_type, institution, signature,
                             institution_id=inst_id)
 
