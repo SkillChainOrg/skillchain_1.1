@@ -225,11 +225,6 @@ def approve_registration(registration_id: str) -> dict:
         return {"success": False, "reason": "Registration not found"}
 
     reg = dict(reg)
-    
-    
-    
-    if reg.get("verified") != 1:
-        return {"success": False, "reason": "Email not verified"}
 
     institution_name = reg["institution"]
     domain           = reg["domain"]
