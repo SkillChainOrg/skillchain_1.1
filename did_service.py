@@ -143,18 +143,19 @@ def get_pending_registrations() -> list:
     ]
 
 
-def _get_pending_registration(registration_id: str) -> dict | None:
-    """Fetch a single verified-but-not-yet-approved pending registration."""
+def _get_pending_registration(registration_id: str):
     conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        "SELECT institution, email, domain "
-        "FROM pending_registrations WHERE id = ? AND verified = 1 AND approved = 0",
-        (registration_id,)
-    ).fetchone()
+    conn.row_factory = sqlite3.Row
+
+    row = conn.execute("""
+        SELECT * FROM pending_registrations
+        WHERE id = ?
+        AND verified = 1
+        AND (approved IS NULL OR approved = 0)
+    """, (registration_id,)).fetchone()
+
     conn.close()
-    if row:
-        return {"institution": row[0], "email": row[1], "domain": row[2]}
-    return None
+    return dict(row) if row else None
 
 
 # ── Institution funding ──────────────────────────────────────────────────────
@@ -212,6 +213,9 @@ def approve_registration(registration_id: str) -> dict:
     reg = _get_pending_registration(registration_id)
     if not reg:
         return {"success": False, "reason": "Registration not found or not verified"}
+    
+    if reg.get("verified") != 1:
+        return {"success": False, "reason": "Email not verified"}
 
     institution_name = reg["institution"]
     domain           = reg["domain"]
