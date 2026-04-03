@@ -43,6 +43,16 @@ def run_migrations() -> None:
     Never drops or renames existing columns.
     """
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS did_registry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institution_id TEXT,
+    institution_address TEXT,
+    private_key_enc TEXT,
+    key_nonce TEXT,
+    wallet_version INTEGER DEFAULT 1
+)
+""")
     try:
         # ── did_registry v2 columns ──────────────────────────────────────────────
 
