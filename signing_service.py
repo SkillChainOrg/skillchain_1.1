@@ -72,15 +72,43 @@ def _load_private_key(institution_id: str | None) -> str:
         # Vault is required — no fallback, no exception swallowing
         return fetch_key(resolved_id)
 
-    # Dev mode: MNEMONIC from environment
-    phrase = os.getenv("MNEMONIC")
-    if not phrase:
-        raise ValueError(
-            "MNEMONIC is not set and VAULT_ENABLED=false. "
-            "Set MNEMONIC for local development or enable Vault for production."
+    # ── Dev mode (VAULT_ENABLED=false) ─────────────────────────────────────────
+    resolved_id = institution_id or SYSTEM_INSTITUTION_ID
+
+    if resolved_id == SYSTEM_INSTITUTION_ID or institution_id is None:
+        # System wallet: load from MNEMONIC env var
+        phrase = os.getenv("MNEMONIC")
+        if not phrase:
+            raise ValueError(
+                "MNEMONIC is not set and VAULT_ENABLED=false. "
+                "Set MNEMONIC for local development or enable Vault for production."
+            )
+        return mn.to_private_key(phrase)
+
+    # Per-institution dev mode: fetch AES-GCM encrypted key from did_registry
+    import sqlite3
+    from key_vault import decrypt_key
+
+    db_path = os.getenv("DB_PATH", "skillchain.db")
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT private_key_enc, key_nonce FROM did_registry WHERE institution_id = ?",
+        (institution_id,),
+    ).fetchone()
+    conn.close()
+
+    if not row or not row[0]:
+        raise KeyError(
+            f"No dev-mode key found for institution_id={institution_id!r}. "
+            "Ensure the institution was approved after KEY_ENCRYPTION_KEY was set."
         )
-    # Convert mnemonic to the same base64 private key format algosdk uses
-    return mn.to_private_key(phrase)
+
+    private_key_bytes = decrypt_key(row[0], row[1])
+    # algosdk expects a base64-encoded 64-byte private key string
+    try:
+        return base64.b64encode(private_key_bytes).decode()
+    finally:
+        del private_key_bytes  # wipe bytes before returning the base64 string
 
 
 # ---------------------------------------------------------------------------

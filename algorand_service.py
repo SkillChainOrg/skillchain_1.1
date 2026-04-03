@@ -65,87 +65,141 @@ def get_indexer_client():
 
 
 def anchor_hash(cert_hash: str, doc_type: str,
-                institution: dict, signature: str) -> dict:
-    # Security: address is public data; private key never enters this scope.
-    # Signing is fully delegated to signing_service (fetch → sign → delete).
-    address = get_issuer_address()
-    client = get_algod_client()
+                institution: dict, signature: str,
+                institution_id: str | None = None) -> dict:
+    """
+    Anchor a certificate hash on Algorand.
+
+    Args:
+        cert_hash:      SHA-256 hex digest of the normalised certificate.
+        doc_type:       Document category string (e.g. "academic").
+        institution:    Dict with at least "institution" and "did" keys.
+        signature:      Ed25519 credential signature (base64).
+        institution_id: Per-institution Vault/AES-GCM key ID.
+                        None → legacy system wallet (wallet_version=1).
+
+    Security: address and signing both routed through signing_service.
+    No private key bytes enter this scope.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+
+    if institution_id is not None:
+        # Per-institution wallet (wallet_version=2)
+        address       = get_issuer_address(institution_id)
+        wallet_version = 2
+    else:
+        # Legacy shared system wallet — log a deprecation warning
+        log.warning(
+            "anchor_hash: issuing with legacy shared system wallet "
+            "(institution_id not provided). "
+            "Approve institution via /admin/approve/<id> to get a dedicated wallet."
+        )
+        address       = get_issuer_address()
+        wallet_version = 1
+
+    client    = get_algod_client()
     issued_at = time.strftime("%Y-%m-%d")
 
     # Build IPFS metadata — all the rich data lives here
+    issued_by  = institution.get("institution") if isinstance(institution, dict) else str(institution)
+    issuer_did = institution.get("did", "")     if isinstance(institution, dict) else ""
     metadata = {
-        "version": "1.0",
-        "cert_hash": cert_hash,       # full hash in IPFS
-        "doc_type": doc_type,
-        "issued_by": institution["institution"],
-        "issuer_did": institution["did"],
+        "version":   "1.0",
+        "cert_hash": cert_hash,
+        "doc_type":  doc_type,
+        "issued_by": issued_by,
+        "issuer_did": issuer_did,
         "issued_at": issued_at,
-        "signature": signature
+        "signature": signature,
     }
 
-    # Retry-wrapped pin
     ipfs_cid = pin_with_retry(metadata)
 
-    # Note contains ONLY the CID — nothing else needed
-    note_data = {"sc": "1", "cid": ipfs_cid}
+    # Note: CID + schema version + wallet_version ("wv") for verifier transparency.
+    # institution_id is NOT stored here — it is derivable from the sender address.
+    note_data  = {"sc": "1", "cid": ipfs_cid, "wv": wallet_version}
     note_bytes = json.dumps(note_data).encode()
 
-    # This will always be ~35 bytes — can never overflow 1024
-    assert len(note_bytes) < 100, f"Unexpected note size: {len(note_bytes)}"
+    assert len(note_bytes) < 150, f"Unexpected note size: {len(note_bytes)}"
 
     params = client.suggested_params()
     txn = transaction.PaymentTxn(
         sender=address, sp=params,
         receiver=address, amt=0, note=note_bytes
     )
-    # Security: sign_transaction fetches key from Vault, signs, deletes key — all in one scope.
-    signed_txn = sign_transaction(txn)
-    tx_id = client.send_transaction(signed_txn)
+
+    # sign_transaction fetches the key from Vault/AES-GCM, signs, and deletes it.
+    signed_txn = sign_transaction(txn, institution_id)
+    tx_id      = client.send_transaction(signed_txn)
     transaction.wait_for_confirmation(client, tx_id, 4)
 
     save_to_db(cert_hash, tx_id, doc_type, issued_at, ipfs_cid)
-    return {"tx_id": tx_id, "ipfs_cid": ipfs_cid}
+    return {"tx_id": tx_id, "ipfs_cid": ipfs_cid, "wallet_version": wallet_version}
 
 def verify_hash(cert_hash: str) -> dict:
     tx_id = lookup_hash(cert_hash)
 
     if tx_id:
-        client = get_indexer_client()
-        txn = client.transaction(tx_id).get("transaction", {})
+        client   = get_indexer_client()
+        txn      = client.transaction(tx_id).get("transaction", {})
         note_raw = txn.get("note", "")
-        note = json.loads(base64.b64decode(note_raw).decode())
+        note     = json.loads(base64.b64decode(note_raw).decode())
 
         ipfs_cid = note.get("cid")
         if not ipfs_cid:
             return {"valid": False, "reason": "Malformed note — no CID"}
 
-        # All verification now happens against IPFS data
-        meta = fetch_certificate_metadata(ipfs_cid)  # gateway fallback chain
+        meta = fetch_certificate_metadata(ipfs_cid)
 
         if meta.get("cert_hash") != cert_hash:
             return {"valid": False, "reason": "IPFS hash mismatch — data tampered"}
 
-        # Verify signature — only the public address is needed here
+        # Use actual sender from the Algorand transaction (not the system address)
+        sender_address = txn.get("sender", "")
+
+        # Check revocation and wallet_version from did_registry
+        conn = sqlite3.connect(DB_PATH)
+        reg_row = conn.execute(
+            """
+            SELECT wallet_version, revoked, institution_id
+            FROM did_registry
+            WHERE institution_address = ?
+               OR (institution_address IS NULL AND address = ?)
+            """,
+            (sender_address, sender_address),
+        ).fetchone()
+        conn.close()
+
+        if reg_row and reg_row[1] == 1:   # revoked
+            return {"valid": False, "reason": "issuer_revoked"}
+
+        # wallet_version: prefer DB column; fall back to note field; default to 1
+        wallet_version = (
+            reg_row[0] if reg_row and reg_row[0] is not None
+            else note.get("wv", 1)
+        )
+
         from did_service import verify_provenance
-        issuer_address = get_issuer_address()
         provenance = verify_provenance(
-            issuer_address,
+            sender_address,
             cert_hash,
-            meta.get("signature", "")
+            meta.get("signature", ""),
         )
 
         return {
-            "valid": True,
-            "signature_valid": provenance["verified"],
-            "tx_id": txn["id"],
+            "valid":           True,
+            "signature_valid": provenance.get("verified"),
+            "wallet_version":  wallet_version,
+            "tx_id":           txn["id"],
             "confirmed_round": txn["confirmed-round"],
-            "issued_by": meta.get("issued_by"),
-            "issuer_did": meta.get("issuer_did"),
-            "doc_type": meta.get("doc_type"),
-            "issued_at": meta.get("issued_at"),
-            "ipfs_cid": ipfs_cid,
-            "ipfs_url": f"https://gateway.pinata.cloud/ipfs/{ipfs_cid}",
-            "explorer_url": f"https://testnet.explorer.perawallet.app/tx/{txn['id']}"
+            "issued_by":       meta.get("issued_by"),
+            "issuer_did":      meta.get("issuer_did"),
+            "doc_type":        meta.get("doc_type"),
+            "issued_at":       meta.get("issued_at"),
+            "ipfs_cid":        ipfs_cid,
+            "ipfs_url":        f"https://gateway.pinata.cloud/ipfs/{ipfs_cid}",
+            "explorer_url":    f"https://testnet.explorer.perawallet.app/tx/{txn['id']}",
         }
 
     return _verify_via_indexer(cert_hash)
