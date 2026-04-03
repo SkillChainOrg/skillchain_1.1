@@ -212,7 +212,21 @@ def approve_registration(registration_id: str) -> dict:
     """
     reg = _get_pending_registration(registration_id)
     if not reg:
-        return {"success": False, "reason": "Registration not found or not verified"}
+    # 🔥 fallback: fetch without verification check
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        reg = conn.execute(
+            "SELECT * FROM pending_registrations WHERE id = ?",
+        (registration_id,)
+    ).fetchone()
+    conn.close()
+
+    if not reg:
+        return {"success": False, "reason": "Registration not found"}
+
+    reg = dict(reg)
+    
+    
     
     if reg.get("verified") != 1:
         return {"success": False, "reason": "Email not verified"}
