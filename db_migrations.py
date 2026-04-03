@@ -55,10 +55,11 @@ def run_migrations() -> None:
 """)
     try:
         # ── did_registry v2 columns ──────────────────────────────────────────────
-
+    
         # 16-char hex institution identifier (derived from institution name via SHA-256).
         # 'LEGACY_SYSTEM' for rows issued before per-institution wallets were introduced.
         _add_column_if_missing(conn, "did_registry", "institution_id",   "TEXT")
+        _add_column_if_missing(conn, "did_registry", "address", "TEXT")
 
         # The institution's own Algorand address (distinct from the system wallet address).
         # NULL for legacy rows.
