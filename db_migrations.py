@@ -43,52 +43,51 @@ def run_migrations() -> None:
     Never drops or renames existing columns.
     """
     conn = sqlite3.connect(DB_PATH)
+
+    # ✅ Base table (complete schema for fresh DBs)
     conn.execute("""
     CREATE TABLE IF NOT EXISTS did_registry (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    institution_id TEXT,
-    institution_address TEXT,
-    private_key_enc TEXT,
-    key_nonce TEXT,
-    wallet_version INTEGER DEFAULT 1
-)
-""")
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        institution_id TEXT,
+        address TEXT,
+        institution_address TEXT,
+        did TEXT,
+        private_key_enc TEXT,
+        key_nonce TEXT,
+        wallet_version INTEGER DEFAULT 1,
+        revoked INTEGER DEFAULT 0,
+        revoked_at TEXT,
+        revoked_reason TEXT
+    )
+    """)
+
     try:
-        # ── did_registry v2 columns ──────────────────────────────────────────────
-    
-        # 16-char hex institution identifier (derived from institution name via SHA-256).
-        # 'LEGACY_SYSTEM' for rows issued before per-institution wallets were introduced.
-        _add_column_if_missing(conn, "did_registry", "institution_id",   "TEXT")
-        _add_column_if_missing(conn, "did_registry", "address", "TEXT")
-
-        # The institution's own Algorand address (distinct from the system wallet address).
-        # NULL for legacy rows.
-        _add_column_if_missing(conn, "did_registry", "institution_address", "TEXT")
-
-        # AES-256-GCM ciphertext (base64).  Used ONLY when VAULT_ENABLED=false.
-        # NULL when VAULT_ENABLED=true (key lives in Vault, not here).
-        _add_column_if_missing(conn, "did_registry", "private_key_enc",  "TEXT")
-
-        # AES-256-GCM nonce (base64).  Paired with private_key_enc.
-        _add_column_if_missing(conn, "did_registry", "key_nonce",        "TEXT")
-
-        # 1 = legacy shared system wallet (wallet_version < 2)
-        # 2 = per-institution dedicated wallet
-        _add_column_if_missing(conn, "did_registry", "wallet_version",   "INTEGER DEFAULT 1")
-
-        # ── Revocation columns ───────────────────────────────────────────────────
-        _add_column_if_missing(conn, "did_registry", "revoked",          "INTEGER DEFAULT 0")
-        _add_column_if_missing(conn, "did_registry", "revoked_at",       "TEXT")
-        _add_column_if_missing(conn, "did_registry", "revoked_reason",   "TEXT")
+        # 🔥 FORCE FIXES (handles broken existing DBs reliably)
+        for col, col_type in [
+            ("institution_id", "TEXT"),
+            ("address", "TEXT"),
+            ("institution_address", "TEXT"),
+            ("did", "TEXT"),
+            ("private_key_enc", "TEXT"),
+            ("key_nonce", "TEXT"),
+            ("wallet_version", "INTEGER DEFAULT 1"),
+            ("revoked", "INTEGER DEFAULT 0"),
+            ("revoked_at", "TEXT"),
+            ("revoked_reason", "TEXT"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE did_registry ADD COLUMN {col} {col_type}")
+            except Exception:
+                # Column already exists → ignore
+                pass
 
         conn.commit()
 
-        # ── Legacy row backfill ──────────────────────────────────────────────────
-        # Mark all rows created before this migration as wallet_version=1 / LEGACY_SYSTEM.
+        # ── Legacy row backfill ──────────────────────────────────────────────
         conn.execute("""
             UPDATE did_registry
-            SET institution_id   = 'LEGACY_SYSTEM',
-                wallet_version   = 1
+            SET institution_id = 'LEGACY_SYSTEM',
+                wallet_version = 1
             WHERE institution_id IS NULL
         """)
         conn.commit()
