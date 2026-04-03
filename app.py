@@ -37,8 +37,8 @@ from did_service import (
 from digilocker_service import (
     create_digilocker_request,
     get_request_status,
-    fetch_document,
-    download_and_hash,
+    fetch_document_data,
+    hash_document_data,
     revoke_access,
 )
 from queue_service import queue_batch, get_batch_status
@@ -81,14 +81,7 @@ def normalize_and_hash(file_bytes: bytes) -> str:
 
 @app.route("/issue/batch", methods=["POST"])
 def issue_batch():
-    api_key = request.headers.get("X-API-Key")
-    institution = validate_api_key(api_key)
-    if not institution:
-        return jsonify({"error": "Invalid API key"}), 403
 
-    if "certificates" not in request.files:
-        return jsonify({"error": "No zip file"}), 400
-    
     api_key = request.headers.get("X-API-Key")
     institution = validate_api_key(api_key)
     if not institution:
@@ -98,7 +91,6 @@ def issue_batch():
     if not zip_file:
         return jsonify({"error": "No zip file uploaded"}), 400
 
-    zip_file = request.files["certificates"]
     doc_type = request.form.get("doc_type", "academic")
 
     # Determine per-institution signing context
