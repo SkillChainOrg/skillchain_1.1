@@ -24,7 +24,10 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, de
     """Add a column only when it is absent."""
     if column in _get_existing_columns(conn, table):
         return
-    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    except Exception:
+        pass  # ignore duplicate column error
     log.info("Migration: added column %s.%s", table, column)
 
 
