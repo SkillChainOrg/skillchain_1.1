@@ -276,7 +276,9 @@ def verify_email():
     token = request.args.get("token")
     if not token:
         return jsonify({"error": "Token required"}), 400
-    return jsonify(verify_email_token(token))
+    result = verify_email_token(token)
+    status = 200 if result.get("success") else 400
+    return jsonify(result), status
 
 
 # ── Admin routes ──────────────────────────────────────────────────────────────

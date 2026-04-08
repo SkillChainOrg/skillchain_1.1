@@ -211,18 +211,22 @@ def approve_registration(registration_id: str) -> dict:
     7. Mark the pending registration as approved.
     """
     reg = _get_pending_registration(registration_id)
-    if not reg:
-    # 🔥 fallback: fetch without verification check
+    # DEV ONLY: allows manual approvals without email verification.
+    # Keep disabled in production to enforce verify-before-approve flow.
+    if not reg and os.getenv("ALLOW_UNVERIFIED_APPROVAL", "false").lower() == "true":
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         reg = conn.execute(
             "SELECT * FROM pending_registrations WHERE id = ?",
-        (registration_id,)
-    ).fetchone()
-    conn.close()
+            (registration_id,),
+        ).fetchone()
+        conn.close()
 
     if not reg:
-        return {"success": False, "reason": "Registration not found"}
+        return {
+            "success": False,
+            "reason": "Registration not found, not verified, or already approved",
+        }
 
     reg = dict(reg)
 
