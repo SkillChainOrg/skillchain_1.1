@@ -94,6 +94,7 @@ def request_registration(institution_name: str, email: str, domain: str) -> dict
     conn.close()
 
     verify_url = f"http://127.0.0.1:5000/verify-email?token={verify_token}"
+    print("VERIFY URL:", verify_url)
     return {
         "registration_id": registration_id,
         "message":         f"Verification email would be sent to {email}",
@@ -211,20 +212,17 @@ def approve_registration(registration_id: str) -> dict:
     7. Mark the pending registration as approved.
     """
     reg = _get_pending_registration(registration_id)
-    if not reg:
-    # 🔥 fallback: fetch without verification check
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        reg = conn.execute(
-            "SELECT * FROM pending_registrations WHERE id = ?",
-        (registration_id,)
-    ).fetchone()
-    conn.close()
-
+    
     if not reg:
         return {"success": False, "reason": "Registration not found"}
-
+    
     reg = dict(reg)
+
+    if reg.get("verified") != 1:
+        return {"success": False, "reason": "Email not verified"}
+
+    if reg.get("approved") == 1:
+        return {"success": False, "reason": "Already approved"}
 
     institution_name = reg["institution"]
     domain           = reg["domain"]

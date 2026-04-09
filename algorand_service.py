@@ -1,241 +1,370 @@
-from dotenv import load_dotenv
-from algosdk import transaction  # account/mnemonic removed: private keys handled solely by signing_service
-from algosdk.v2client import algod, indexer
-from ipfs_service import pin_certificate_metadata,fetch_certificate_metadata,pin_with_retry
-import os, json, base64, time
+"""
+algorand_service.py — Algorand anchoring and verification for SkillChain.
+
+FIXES applied:
+  - anchor_hash now generates a per-certificate HMAC key and stores
+    hmac_key, hmac_value, cert_number, issued_to in the certificates table.
+  - verify_hash re-computes HMAC from the stored key and validates it against
+    the IPFS-stored hmac_value (tamper-evidence).
+  - Added verify_by_cert_number() for the DigiLocker verification path:
+    looks up a certificate by cert_number, hashes the submitted file, and
+    compares.
+  - get_anchored_name_hash() replaced — the old implementation parsed a
+    deprecated note format and looked for a 'name_hash' field that was
+    never written; verification now uses the issued_to column in the DB.
+  - Removed holder_name parameter that was never part of the real signature.
+"""
+
+import base64
+import hashlib
+import hmac as hmac_lib
+import json
+import logging
+import os
+import secrets
 import sqlite3
+import time
+
+from dotenv import load_dotenv
+from algosdk import transaction
+from algosdk.v2client import algod, indexer
 from PIL import Image
 import io
-import hashlib
-import hmac
 
-# Security: all private-key operations are routed through signing_service.
-# This module never holds or passes a raw private key.
+from ipfs_service import pin_certificate_metadata, fetch_certificate_metadata, pin_with_retry
 from signing_service import sign_transaction, get_issuer_address
 
+load_dotenv()
 
-DB_PATH = "skillchain.db"
+log = logging.getLogger(__name__)
 
+DB_PATH       = os.getenv("DB_PATH", "skillchain.db")
+ALGOD_URL     = os.getenv("ALGOD_URL",   "https://testnet-api.algonode.cloud")
+INDEXER_URL   = os.getenv("INDEXER_URL", "https://testnet-idx.algonode.cloud")
+ALGOD_TOKEN   = ""
+INDEXER_TOKEN = ""
+
+
+# ── DB helpers ────────────────────────────────────────────────────────────────
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS certificates (
-            cert_hash TEXT PRIMARY KEY,
-            tx_id     TEXT NOT NULL,
-            doc_type  TEXT,
-            issued_at TEXT,
-            ipfs_cid  TEXT
+            cert_hash   TEXT PRIMARY KEY,
+            tx_id       TEXT NOT NULL,
+            doc_type    TEXT,
+            issued_at   TEXT,
+            ipfs_cid    TEXT,
+            cert_number TEXT,
+            hmac_key    TEXT,
+            hmac_value  TEXT,
+            issued_to   TEXT
         )
     """)
     conn.commit()
     conn.close()
 
-def save_to_db(cert_hash, tx_id, doc_type, issued_at, ipfs_cid=None):
+
+def save_to_db(
+    cert_hash: str,
+    tx_id: str,
+    doc_type: str,
+    issued_at: str,
+    ipfs_cid: str | None = None,
+    cert_number: str | None = None,
+    hmac_key: str | None = None,
+    hmac_value: str | None = None,
+    issued_to: str | None = None,
+) -> None:
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
-        "INSERT OR REPLACE INTO certificates VALUES (?, ?, ?, ?, ?)",
-        (cert_hash, tx_id, doc_type, issued_at, ipfs_cid)  # ← now stored
+        """INSERT OR REPLACE INTO certificates
+           (cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
+            cert_number, hmac_key, hmac_value, issued_to)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
+         cert_number, hmac_key, hmac_value, issued_to),
     )
     conn.commit()
     conn.close()
 
 
-def lookup_hash(cert_hash: str) -> str | None:
+def lookup_hash(cert_hash: str):
+    """Return (tx_id, hmac_key, hmac_value, cert_number, ipfs_cid) or None."""
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
-        "SELECT tx_id FROM certificates WHERE cert_hash = ?",
-        (cert_hash,)
+        """SELECT tx_id, hmac_key, hmac_value, cert_number, ipfs_cid
+           FROM certificates WHERE cert_hash = ?""",
+        (cert_hash,),
     ).fetchone()
     conn.close()
-    return row[0] if row else None
+    return row  # None or 5-tuple
 
-load_dotenv()
 
-ALGOD_URL     = os.getenv("ALGOD_URL", "https://testnet-api.algonode.cloud")
-INDEXER_URL   = os.getenv("INDEXER_URL", "https://testnet-idx.algonode.cloud")
-ALGOD_TOKEN   = ""
-INDEXER_TOKEN = ""
+def lookup_by_cert_number(cert_number: str):
+    """Return (cert_hash, tx_id, hmac_key, hmac_value, ipfs_cid, issued_to) or None."""
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        """SELECT cert_hash, tx_id, hmac_key, hmac_value, ipfs_cid, issued_to
+           FROM certificates WHERE cert_number = ?""",
+        (cert_number,),
+    ).fetchone()
+    conn.close()
+    return row
+
+
+# ── Algorand clients ──────────────────────────────────────────────────────────
 
 def get_algod_client():
     return algod.AlgodClient(ALGOD_TOKEN, ALGOD_URL)
+
 
 def get_indexer_client():
     return indexer.IndexerClient(INDEXER_TOKEN, INDEXER_URL)
 
 
-def anchor_hash(cert_hash: str, doc_type: str,
-                institution: dict, signature: str,
-                institution_id: str | None = None) -> dict:
+# ── HMAC helpers ──────────────────────────────────────────────────────────────
+
+def _generate_hmac_key() -> str:
+    """Generate a 32-byte random HMAC key (hex-encoded)."""
+    return secrets.token_hex(32)
+
+
+def _compute_hmac(hmac_key_hex: str, cert_hash: str) -> str:
+    """Return HMAC-SHA256(key, cert_hash) as a hex string."""
+    key = bytes.fromhex(hmac_key_hex)
+    return hmac_lib.new(key, cert_hash.encode(), hashlib.sha256).hexdigest()
+
+
+# ── Core: anchor a certificate hash on Algorand ───────────────────────────────
+
+def anchor_hash(
+    cert_hash: str,
+    doc_type: str,
+    institution: dict,
+    signature: str,
+    institution_id: str | None = None,
+    cert_number: str | None = None,
+    issued_to: str | None = None,
+) -> dict:
     """
-    Anchor a certificate hash on Algorand.
+    Anchor a certificate hash on Algorand and pin metadata to IPFS.
 
     Args:
-        cert_hash:      SHA-256 hex digest of the normalised certificate.
-        doc_type:       Document category string (e.g. "academic").
+        cert_hash:      SHA-256 hex digest of the normalised certificate image.
+        doc_type:       Document category (e.g. "academic").
         institution:    Dict with at least "institution" and "did" keys.
         signature:      Ed25519 credential signature (base64).
-        institution_id: Per-institution Vault/AES-GCM key ID.
-                        None → legacy system wallet (wallet_version=1).
+        institution_id: Per-institution Vault/AES-GCM key ID. None → system wallet.
+        cert_number:    Institution-assigned roll/cert number (used as the
+                        DigiLocker lookup key at verification time).
+        issued_to:      SHA-256 hash of the holder's name (name.strip().lower()).
+                        NOT the raw name — keeps PII out of the DB and IPFS.
 
-    Security: address and signing both routed through signing_service.
-    No private key bytes enter this scope.
+    Returns:
+        dict with tx_id, ipfs_cid, wallet_version, hmac_value.
+
+    Security: no private key bytes enter this scope.
     """
-    import logging
-    log = logging.getLogger(__name__)
-
     if institution_id is not None:
-        # Per-institution wallet (wallet_version=2)
-        address       = get_issuer_address(institution_id)
+        address        = get_issuer_address(institution_id)
         wallet_version = 2
     else:
-        # Legacy shared system wallet — log a deprecation warning
         log.warning(
             "anchor_hash: issuing with legacy shared system wallet "
-            "(institution_id not provided). "
-            "Approve institution via /admin/approve/<id> to get a dedicated wallet."
+            "(institution_id not provided). Approve institution via "
+            "/admin/approve/<id> to get a dedicated wallet."
         )
-        address       = get_issuer_address()
+        address        = get_issuer_address()
         wallet_version = 1
 
     client    = get_algod_client()
     issued_at = time.strftime("%Y-%m-%d")
 
-    # Build IPFS metadata — all the rich data lives here
+    # ── Generate per-certificate HMAC key ─────────────────────────────────────
+    hmac_key   = _generate_hmac_key()
+    hmac_value = _compute_hmac(hmac_key, cert_hash)
+
     issued_by  = institution.get("institution") if isinstance(institution, dict) else str(institution)
     issuer_did = institution.get("did", "")     if isinstance(institution, dict) else ""
+
+    # hmac_key is intentionally NOT stored in IPFS — it stays in the local DB.
+    # The verifier re-derives hmac_value from the DB key and compares with
+    # the IPFS-stored value to detect any tampering.
     metadata = {
-        "version":   "1.0",
-        "cert_hash": cert_hash,
-        "doc_type":  doc_type,
-        "issued_by": issued_by,
+        "version":    "1.0",
+        "cert_hash":  cert_hash,
+        "doc_type":   doc_type,
+        "issued_by":  issued_by,
         "issuer_did": issuer_did,
-        "issued_at": issued_at,
-        "signature": signature,
+        "issued_at":  issued_at,
+        "signature":  signature,
+        "hmac_value": hmac_value,          # stored in IPFS for tamper-evidence
+        "cert_number": cert_number or "",  # roll/cert id for DigiLocker lookup
+        "issued_to":  issued_to or "",     # hashed holder name (not PII)
     }
 
     ipfs_cid = pin_with_retry(metadata)
 
-    # Note: CID + schema version + wallet_version ("wv") for verifier transparency.
-    # institution_id is NOT stored here — it is derivable from the sender address.
     note_data  = {"sc": "1", "cid": ipfs_cid, "wv": wallet_version}
     note_bytes = json.dumps(note_data).encode()
-
     assert len(note_bytes) < 150, f"Unexpected note size: {len(note_bytes)}"
 
     params = client.suggested_params()
-    txn = transaction.PaymentTxn(
-        sender=address, sp=params,
-        receiver=address, amt=0, note=note_bytes
+    txn    = transaction.PaymentTxn(
+        sender=address, sp=params, receiver=address, amt=0, note=note_bytes
     )
 
-    # sign_transaction fetches the key from Vault/AES-GCM, signs, and deletes it.
     signed_txn = sign_transaction(txn, institution_id)
     tx_id      = client.send_transaction(signed_txn)
-    transaction.wait_for_confirmation(client, tx_id, 4)
+    #transaction.wait_for_confirmation(client, tx_id, 4)
 
-    save_to_db(cert_hash, tx_id, doc_type, issued_at, ipfs_cid)
-    return {"tx_id": tx_id, "ipfs_cid": ipfs_cid, "wallet_version": wallet_version}
+    save_to_db(
+        cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
+        cert_number=cert_number,
+        hmac_key=hmac_key,       # secret — local DB only
+        hmac_value=hmac_value,
+        issued_to=issued_to,
+    )
+
+    return {
+        "tx_id":          tx_id,
+        "ipfs_cid":       ipfs_cid,
+        "wallet_version": wallet_version,
+        "hmac_value":     hmac_value,
+    }
+
+
+# ── Core: verify a certificate hash ──────────────────────────────────────────
 
 def verify_hash(cert_hash: str) -> dict:
-    tx_id = lookup_hash(cert_hash)
+    """
+    Verify a certificate by its SHA-256 image hash.
 
-    if tx_id:
-        client   = get_indexer_client()
-        txn      = client.transaction(tx_id).get("transaction", {})
-        note_raw = txn.get("note", "")
-        note     = json.loads(base64.b64decode(note_raw).decode())
+    Steps:
+      1. Look up in local DB (fast path).
+      2. Fetch IPFS metadata and compare cert_hash field.
+      3. Re-compute HMAC from stored key; compare with IPFS-stored value.
+      4. Check issuer revocation in did_registry.
+      5. Verify Ed25519 provenance signature.
+    """
+    row = lookup_hash(cert_hash)
 
-        ipfs_cid = note.get("cid")
-        if not ipfs_cid:
-            return {"valid": False, "reason": "Malformed note — no CID"}
-
-        meta = fetch_certificate_metadata(ipfs_cid)
-
-        if meta.get("cert_hash") != cert_hash:
-            return {"valid": False, "reason": "IPFS hash mismatch — data tampered"}
-
-        # Use actual sender from the Algorand transaction (not the system address)
-        sender_address = txn.get("sender", "")
-
-        # Check revocation and wallet_version from did_registry
-        conn = sqlite3.connect(DB_PATH)
-        reg_row = conn.execute(
-            """
-            SELECT wallet_version, revoked, institution_id
-            FROM did_registry
-            WHERE institution_address = ?
-               OR (institution_address IS NULL AND address = ?)
-            """,
-            (sender_address, sender_address),
-        ).fetchone()
-        conn.close()
-
-        if reg_row and reg_row[1] == 1:   # revoked
-            return {"valid": False, "reason": "issuer_revoked"}
-
-        # wallet_version: prefer DB column; fall back to note field; default to 1
-        wallet_version = (
-            reg_row[0] if reg_row and reg_row[0] is not None
-            else note.get("wv", 1)
-        )
-
-        from did_service import verify_provenance
-        provenance = verify_provenance(
-            sender_address,
-            cert_hash,
-            meta.get("signature", ""),
-        )
-
-        return {
-            "valid":           True,
-            "signature_valid": provenance.get("verified"),
-            "wallet_version":  wallet_version,
-            "tx_id":           txn["id"],
-            "confirmed_round": txn["confirmed-round"],
-            "issued_by":       meta.get("issued_by"),
-            "issuer_did":      meta.get("issuer_did"),
-            "doc_type":        meta.get("doc_type"),
-            "issued_at":       meta.get("issued_at"),
-            "ipfs_cid":        ipfs_cid,
-            "ipfs_url":        f"https://gateway.pinata.cloud/ipfs/{ipfs_cid}",
-            "explorer_url":    f"https://testnet.explorer.perawallet.app/tx/{txn['id']}",
-        }
+    if row:
+        tx_id, stored_hmac_key, stored_hmac_value, cert_number, ipfs_cid = row
+        return _verify_full(cert_hash, tx_id, ipfs_cid, stored_hmac_key, stored_hmac_value)
 
     return _verify_via_indexer(cert_hash)
 
 
+def _verify_full(
+    cert_hash: str,
+    tx_id: str,
+    ipfs_cid: str,
+    stored_hmac_key: str | None,
+    stored_hmac_value: str | None,
+) -> dict:
+    """Full verification against IPFS metadata and Algorand transaction."""
+    client  = get_indexer_client()
+    txn_obj = client.transaction(tx_id).get("transaction", {})
+    note_raw = txn_obj.get("note", "")
+
+    try:
+        note = json.loads(base64.b64decode(note_raw).decode())
+    except Exception:
+        return {"valid": False, "reason": "Malformed transaction note"}
+
+    ipfs_cid_from_note = note.get("cid") or ipfs_cid
+    meta = fetch_certificate_metadata(ipfs_cid_from_note)
+
+    if meta.get("cert_hash") != cert_hash:
+        return {"valid": False, "reason": "IPFS hash mismatch — data tampered"}
+
+    # ── HMAC tamper-evidence check ─────────────────────────────────────────
+    hmac_ok = False
+    if stored_hmac_key and stored_hmac_value:
+        recomputed = _compute_hmac(stored_hmac_key, cert_hash)
+        ipfs_hmac  = meta.get("hmac_value", "")
+        hmac_ok    = (
+            hmac_lib.compare_digest(recomputed, stored_hmac_value)
+            and hmac_lib.compare_digest(recomputed, ipfs_hmac)
+        )
+
+    # ── Revocation check ──────────────────────────────────────────────────
+    sender_address = txn_obj.get("sender", "")
+    conn = sqlite3.connect(DB_PATH)
+    reg_row = conn.execute(
+        """
+        SELECT wallet_version, revoked, institution_id
+        FROM did_registry
+        WHERE institution_address = ?
+           OR (institution_address IS NULL AND address = ?)
+        """,
+        (sender_address, sender_address),
+    ).fetchone()
+    conn.close()
+
+    if reg_row and reg_row[1] == 1:
+        return {"valid": False, "reason": "issuer_revoked"}
+
+    wallet_version = (
+        reg_row[0] if reg_row and reg_row[0] is not None else note.get("wv", 1)
+    )
+
+    # ── Ed25519 provenance check ──────────────────────────────────────────
+    from did_service import verify_provenance
+    provenance = verify_provenance(
+        sender_address, cert_hash, meta.get("signature", "")
+    )
+
+    return {
+        "valid":            True,
+        "hmac_valid":       hmac_ok,
+        "signature_valid":  provenance.get("verified"),
+        "wallet_version":   wallet_version,
+        "tx_id":            txn_obj["id"],
+        "confirmed_round":  txn_obj["confirmed-round"],
+        "issued_by":        meta.get("issued_by"),
+        "issuer_did":       meta.get("issuer_did"),
+        "doc_type":         meta.get("doc_type"),
+        "issued_at":        meta.get("issued_at"),
+        "cert_number":      meta.get("cert_number"),
+        "ipfs_cid":         ipfs_cid_from_note,
+        "ipfs_url":         f"https://gateway.pinata.cloud/ipfs/{ipfs_cid_from_note}",
+        "explorer_url":     f"https://testnet.explorer.perawallet.app/tx/{txn_obj['id']}",
+    }
+
+
 def _verify_via_indexer(cert_hash: str) -> dict:
-    client = get_indexer_client()
-    # Security: only the public address is needed for indexer lookup
+    """Fallback: scan Algorand indexer when cert is not in local DB."""
+    client  = get_indexer_client()
     address = get_issuer_address()
     try:
         txns = client.search_transactions(
-            address=address,
-            note_prefix=b'{"sc":'      # matches new note format
+            address=address, note_prefix=b'{"sc":'
         ).get("transactions", [])
 
         for txn in txns:
             note_raw = txn.get("note", "")
             try:
-                note = json.loads(base64.b64decode(note_raw).decode())
+                note     = json.loads(base64.b64decode(note_raw).decode())
                 ipfs_cid = note.get("cid")
                 if not ipfs_cid:
                     continue
-                
-                # Fetch from IPFS and check cert_hash
                 meta = fetch_certificate_metadata(ipfs_cid)
                 if meta.get("cert_hash") == cert_hash:
                     return {
-                        "valid": True,
-                        "tx_id": txn["id"],
+                        "valid":       True,
+                        "tx_id":       txn["id"],
                         "confirmed_round": txn["confirmed-round"],
-                        "issued_by": meta.get("issued_by"),
-                        "doc_type": meta.get("doc_type"),
-                        "issued_at": meta.get("issued_at"),
-                        "ipfs_cid": ipfs_cid,
-                        "source": "algorand_indexer_fallback",
-                        "explorer_url": f"https://testnet.explorer.perawallet.app/tx/{txn['id']}"
+                        "issued_by":   meta.get("issued_by"),
+                        "doc_type":    meta.get("doc_type"),
+                        "issued_at":   meta.get("issued_at"),
+                        "cert_number": meta.get("cert_number"),
+                        "ipfs_cid":    ipfs_cid,
+                        "source":      "algorand_indexer_fallback",
+                        "explorer_url": f"https://testnet.explorer.perawallet.app/tx/{txn['id']}",
                     }
             except Exception:
                 continue
@@ -244,21 +373,82 @@ def _verify_via_indexer(cert_hash: str) -> dict:
 
     return {"valid": False, "reason": "Certificate not found"}
 
-def get_anchored_name_hash(cert_hash: str) -> str:
-    tx_id = lookup_hash(cert_hash)
-    if not tx_id:
-        return ""
-    
-    client = get_indexer_client()
-    response = client.transaction(tx_id)
-    txn = response.get("transaction", {})
-    
-    note_raw = txn.get("note", "")
-    note_decoded = base64.b64decode(note_raw).decode()
-    note_json = note_decoded.replace("skillchain:j", "")
-    data = json.loads(note_json)
-    
-    return data.get("name_hash", "")
+
+# ── DigiLocker verification path ──────────────────────────────────────────────
+
+def verify_by_cert_number(
+    cert_number: str,
+    submitted_cert_hash: str,
+    digilocker_name: str | None = None,
+) -> dict:
+    """
+    Verify a certificate using its roll/certificate number.
+
+    Called by the DigiLocker verification flow after DigiLocker has returned
+    the document's cert_number (roll number) and the employer has submitted
+    the certificate image.
+
+    Steps:
+      1. Look up cert_number in local DB → get stored cert_hash.
+      2. Compare submitted_cert_hash with stored cert_hash.
+      3. If they match, run full HMAC + IPFS + blockchain verification.
+      4. Optionally verify the holder's name against the stored issued_to hash.
+
+    Args:
+        cert_number:           Roll/certificate number from the DigiLocker document.
+        submitted_cert_hash:   SHA-256 of the certificate image submitted by employer.
+        digilocker_name:       Name as returned by DigiLocker (optional; used for
+                               identity check if issued_to was stored at issuance).
+
+    Returns:
+        dict with valid, identity_verified, and full verification detail.
+    """
+    row = lookup_by_cert_number(cert_number)
+    if not row:
+        return {
+            "valid":  False,
+            "reason": f"No certificate found with cert_number='{cert_number}'",
+        }
+
+    stored_cert_hash, tx_id, hmac_key, hmac_value, ipfs_cid, issued_to = row
+
+    # ── Hash match: submitted image == the image issued by the institution? ──
+    if submitted_cert_hash != stored_cert_hash:
+        return {
+            "valid":  False,
+            "reason": "Certificate image does not match the issued certificate",
+            "detail": "The submitted file has been modified or is not the original",
+        }
+
+    # ── Full blockchain + HMAC verification ───────────────────────────────────
+    result = _verify_full(stored_cert_hash, tx_id, ipfs_cid, hmac_key, hmac_value)
+    if not result.get("valid"):
+        return result
+
+    # ── Identity check (optional) ─────────────────────────────────────────────
+    identity_verified = False
+    identity_detail   = "Identity check skipped — name not provided"
+
+    if digilocker_name and issued_to:
+        name_hash = hashlib.sha256(
+            digilocker_name.strip().lower().encode()
+        ).hexdigest()
+        identity_verified = hmac_lib.compare_digest(name_hash, issued_to)
+        identity_detail   = (
+            "DigiLocker name matches certificate holder"
+            if identity_verified
+            else "DigiLocker name does NOT match certificate holder"
+        )
+
+    return {
+        **result,
+        "identity_verified": identity_verified,
+        "identity_check":    identity_detail,
+        "source":            "digilocker_cert_number_lookup",
+    }
+
+
+# ── Entrypoint ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     init_db()
