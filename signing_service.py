@@ -110,11 +110,11 @@ def _load_private_key(institution_id: str | None) -> str:
         )
 
     private_key_bytes = decrypt_key(row[0], row[1])
-    # algosdk expects a base64-encoded 64-byte private key string
-    try:
-        return base64.b64encode(private_key_bytes).decode()
-    finally:
-        del private_key_bytes  # wipe bytes before returning the base64 string
+
+    # FIX: restore original Algorand private key format
+    private_key = private_key_bytes.decode()
+
+    return private_key
 
 
 # ---------------------------------------------------------------------------
