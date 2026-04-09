@@ -1,18 +1,13 @@
 """
 algorand_service.py — Algorand anchoring and verification for SkillChain.
 
-FIXES applied:
-  - anchor_hash now generates a per-certificate HMAC key and stores
-    hmac_key, hmac_value, cert_number, issued_to in the certificates table.
-  - verify_hash re-computes HMAC from the stored key and validates it against
-    the IPFS-stored hmac_value (tamper-evidence).
-  - Added verify_by_cert_number() for the DigiLocker verification path:
-    looks up a certificate by cert_number, hashes the submitted file, and
-    compares.
-  - get_anchored_name_hash() replaced — the old implementation parsed a
-    deprecated note format and looked for a 'name_hash' field that was
-    never written; verification now uses the issued_to column in the DB.
-  - Removed holder_name parameter that was never part of the real signature.
+CHANGES (PostgreSQL migration):
+  - Removed sqlite3 / DB_PATH.
+  - All DB access uses psycopg2 via db.get_db_connection() / db.dict_cursor().
+  - SQL placeholders changed from ? to %s.
+  - INSERT OR REPLACE → INSERT ... ON CONFLICT (cert_hash) DO UPDATE SET ...
+  - Row access changed from positional index to dict keys.
+  - Added explicit cursor management (cur = conn.cursor()).
 """
 
 import base64
@@ -22,7 +17,6 @@ import json
 import logging
 import os
 import secrets
-import sqlite3
 import time
 
 from dotenv import load_dotenv
@@ -31,6 +25,7 @@ from algosdk.v2client import algod, indexer
 from PIL import Image
 import io
 
+from db import get_db_connection, dict_cursor
 from ipfs_service import pin_certificate_metadata, fetch_certificate_metadata, pin_with_retry
 from signing_service import sign_transaction, get_issuer_address
 
@@ -38,7 +33,6 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
-DB_PATH       = os.getenv("DB_PATH", "skillchain.db")
 ALGOD_URL     = os.getenv("ALGOD_URL",   "https://testnet-api.algonode.cloud")
 INDEXER_URL   = os.getenv("INDEXER_URL", "https://testnet-idx.algonode.cloud")
 ALGOD_TOKEN   = ""
@@ -48,22 +42,27 @@ INDEXER_TOKEN = ""
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS certificates (
-            cert_hash   TEXT PRIMARY KEY,
-            tx_id       TEXT NOT NULL,
-            doc_type    TEXT,
-            issued_at   TEXT,
-            ipfs_cid    TEXT,
-            cert_number TEXT,
-            hmac_key    TEXT,
-            hmac_value  TEXT,
-            issued_to   TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    """Create the certificates table if it does not exist."""
+    conn = get_db_connection()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS certificates (
+                cert_hash   TEXT PRIMARY KEY,
+                tx_id       TEXT NOT NULL,
+                doc_type    TEXT,
+                issued_at   TEXT,
+                ipfs_cid    TEXT,
+                cert_number TEXT,
+                hmac_key    TEXT,
+                hmac_value  TEXT,
+                issued_to   TEXT
+            )
+        """)
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
 
 
 def save_to_db(
@@ -77,41 +76,70 @@ def save_to_db(
     hmac_value: str | None = None,
     issued_to: str | None = None,
 ) -> None:
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        """INSERT OR REPLACE INTO certificates
-           (cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
-            cert_number, hmac_key, hmac_value, issued_to)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
-         cert_number, hmac_key, hmac_value, issued_to),
-    )
-    conn.commit()
-    conn.close()
+    conn = get_db_connection()
+    cur  = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO certificates
+                (cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
+                 cert_number, hmac_key, hmac_value, issued_to)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (cert_hash) DO UPDATE SET
+                tx_id       = EXCLUDED.tx_id,
+                doc_type    = EXCLUDED.doc_type,
+                issued_at   = EXCLUDED.issued_at,
+                ipfs_cid    = EXCLUDED.ipfs_cid,
+                cert_number = EXCLUDED.cert_number,
+                hmac_key    = EXCLUDED.hmac_key,
+                hmac_value  = EXCLUDED.hmac_value,
+                issued_to   = EXCLUDED.issued_to
+            """,
+            (cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
+             cert_number, hmac_key, hmac_value, issued_to),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
 
 
-def lookup_hash(cert_hash: str):
-    """Return (tx_id, hmac_key, hmac_value, cert_number, ipfs_cid) or None."""
-    conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        """SELECT tx_id, hmac_key, hmac_value, cert_number, ipfs_cid
-           FROM certificates WHERE cert_hash = ?""",
-        (cert_hash,),
-    ).fetchone()
-    conn.close()
-    return row  # None or 5-tuple
+def lookup_hash(cert_hash: str) -> dict | None:
+    """Return dict with tx_id, hmac_key, hmac_value, cert_number, ipfs_cid — or None."""
+    conn = get_db_connection()
+    cur  = dict_cursor(conn)
+    try:
+        cur.execute(
+            """
+            SELECT tx_id, hmac_key, hmac_value, cert_number, ipfs_cid
+            FROM certificates WHERE cert_hash = %s
+            """,
+            (cert_hash,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        cur.close()
+        conn.close()
 
 
-def lookup_by_cert_number(cert_number: str):
-    """Return (cert_hash, tx_id, hmac_key, hmac_value, ipfs_cid, issued_to) or None."""
-    conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        """SELECT cert_hash, tx_id, hmac_key, hmac_value, ipfs_cid, issued_to
-           FROM certificates WHERE cert_number = ?""",
-        (cert_number,),
-    ).fetchone()
-    conn.close()
-    return row
+def lookup_by_cert_number(cert_number: str) -> dict | None:
+    """Return dict with cert_hash, tx_id, hmac_key, hmac_value, ipfs_cid, issued_to — or None."""
+    conn = get_db_connection()
+    cur  = dict_cursor(conn)
+    try:
+        cur.execute(
+            """
+            SELECT cert_hash, tx_id, hmac_key, hmac_value, ipfs_cid, issued_to
+            FROM certificates WHERE cert_number = %s
+            """,
+            (cert_number,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        cur.close()
+        conn.close()
 
 
 # ── Algorand clients ──────────────────────────────────────────────────────────
@@ -157,15 +185,12 @@ def anchor_hash(
         institution:    Dict with at least "institution" and "did" keys.
         signature:      Ed25519 credential signature (base64).
         institution_id: Per-institution Vault/AES-GCM key ID. None → system wallet.
-        cert_number:    Institution-assigned roll/cert number (used as the
-                        DigiLocker lookup key at verification time).
+        cert_number:    Institution-assigned roll/cert number (DigiLocker lookup key).
         issued_to:      SHA-256 hash of the holder's name (name.strip().lower()).
                         NOT the raw name — keeps PII out of the DB and IPFS.
 
     Returns:
         dict with tx_id, ipfs_cid, wallet_version, hmac_value.
-
-    Security: no private key bytes enter this scope.
     """
     if institution_id is not None:
         address        = get_issuer_address(institution_id)
@@ -173,8 +198,7 @@ def anchor_hash(
     else:
         log.warning(
             "anchor_hash: issuing with legacy shared system wallet "
-            "(institution_id not provided). Approve institution via "
-            "/admin/approve/<id> to get a dedicated wallet."
+            "(institution_id not provided)."
         )
         address        = get_issuer_address()
         wallet_version = 1
@@ -182,27 +206,23 @@ def anchor_hash(
     client    = get_algod_client()
     issued_at = time.strftime("%Y-%m-%d")
 
-    # ── Generate per-certificate HMAC key ─────────────────────────────────────
     hmac_key   = _generate_hmac_key()
     hmac_value = _compute_hmac(hmac_key, cert_hash)
 
     issued_by  = institution.get("institution") if isinstance(institution, dict) else str(institution)
     issuer_did = institution.get("did", "")     if isinstance(institution, dict) else ""
 
-    # hmac_key is intentionally NOT stored in IPFS — it stays in the local DB.
-    # The verifier re-derives hmac_value from the DB key and compares with
-    # the IPFS-stored value to detect any tampering.
     metadata = {
-        "version":    "1.0",
-        "cert_hash":  cert_hash,
-        "doc_type":   doc_type,
-        "issued_by":  issued_by,
-        "issuer_did": issuer_did,
-        "issued_at":  issued_at,
-        "signature":  signature,
-        "hmac_value": hmac_value,          # stored in IPFS for tamper-evidence
-        "cert_number": cert_number or "",  # roll/cert id for DigiLocker lookup
-        "issued_to":  issued_to or "",     # hashed holder name (not PII)
+        "version":     "1.0",
+        "cert_hash":   cert_hash,
+        "doc_type":    doc_type,
+        "issued_by":   issued_by,
+        "issuer_did":  issuer_did,
+        "issued_at":   issued_at,
+        "signature":   signature,
+        "hmac_value":  hmac_value,
+        "cert_number": cert_number or "",
+        "issued_to":   issued_to or "",
     }
 
     ipfs_cid = pin_with_retry(metadata)
@@ -218,12 +238,11 @@ def anchor_hash(
 
     signed_txn = sign_transaction(txn, institution_id)
     tx_id      = client.send_transaction(signed_txn)
-    #transaction.wait_for_confirmation(client, tx_id, 4)
 
     save_to_db(
         cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
         cert_number=cert_number,
-        hmac_key=hmac_key,       # secret — local DB only
+        hmac_key=hmac_key,
         hmac_value=hmac_value,
         issued_to=issued_to,
     )
@@ -250,11 +269,14 @@ def verify_hash(cert_hash: str) -> dict:
       5. Verify Ed25519 provenance signature.
     """
     row = lookup_hash(cert_hash)
-
     if row:
-        tx_id, stored_hmac_key, stored_hmac_value, cert_number, ipfs_cid = row
-        return _verify_full(cert_hash, tx_id, ipfs_cid, stored_hmac_key, stored_hmac_value)
-
+        return _verify_full(
+            cert_hash,
+            row["tx_id"],
+            row["ipfs_cid"],
+            row["hmac_key"],
+            row["hmac_value"],
+        )
     return _verify_via_indexer(cert_hash)
 
 
@@ -291,25 +313,32 @@ def _verify_full(
             and hmac_lib.compare_digest(recomputed, ipfs_hmac)
         )
 
-    # ── Revocation check ──────────────────────────────────────────────────
+    # ── Revocation check (PostgreSQL) ──────────────────────────────────────
     sender_address = txn_obj.get("sender", "")
-    conn = sqlite3.connect(DB_PATH)
-    reg_row = conn.execute(
-        """
-        SELECT wallet_version, revoked, institution_id
-        FROM did_registry
-        WHERE institution_address = ?
-           OR (institution_address IS NULL AND address = ?)
-        """,
-        (sender_address, sender_address),
-    ).fetchone()
-    conn.close()
+    conn = get_db_connection()
+    cur  = dict_cursor(conn)
+    try:
+        cur.execute(
+            """
+            SELECT wallet_version, revoked, institution_id
+            FROM did_registry
+            WHERE institution_address = %s
+               OR (institution_address IS NULL AND address = %s)
+            """,
+            (sender_address, sender_address),
+        )
+        reg_row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
 
-    if reg_row and reg_row[1] == 1:
+    if reg_row and reg_row["revoked"] == 1:
         return {"valid": False, "reason": "issuer_revoked"}
 
     wallet_version = (
-        reg_row[0] if reg_row and reg_row[0] is not None else note.get("wv", 1)
+        reg_row["wallet_version"]
+        if reg_row and reg_row["wallet_version"] is not None
+        else note.get("wv", 1)
     )
 
     # ── Ed25519 provenance check ──────────────────────────────────────────
@@ -355,16 +384,16 @@ def _verify_via_indexer(cert_hash: str) -> dict:
                 meta = fetch_certificate_metadata(ipfs_cid)
                 if meta.get("cert_hash") == cert_hash:
                     return {
-                        "valid":       True,
-                        "tx_id":       txn["id"],
+                        "valid":           True,
+                        "tx_id":           txn["id"],
                         "confirmed_round": txn["confirmed-round"],
-                        "issued_by":   meta.get("issued_by"),
-                        "doc_type":    meta.get("doc_type"),
-                        "issued_at":   meta.get("issued_at"),
-                        "cert_number": meta.get("cert_number"),
-                        "ipfs_cid":    ipfs_cid,
-                        "source":      "algorand_indexer_fallback",
-                        "explorer_url": f"https://testnet.explorer.perawallet.app/tx/{txn['id']}",
+                        "issued_by":       meta.get("issued_by"),
+                        "doc_type":        meta.get("doc_type"),
+                        "issued_at":       meta.get("issued_at"),
+                        "cert_number":     meta.get("cert_number"),
+                        "ipfs_cid":        ipfs_cid,
+                        "source":          "algorand_indexer_fallback",
+                        "explorer_url":    f"https://testnet.explorer.perawallet.app/tx/{txn['id']}",
                     }
             except Exception:
                 continue
@@ -384,21 +413,10 @@ def verify_by_cert_number(
     """
     Verify a certificate using its roll/certificate number.
 
-    Called by the DigiLocker verification flow after DigiLocker has returned
-    the document's cert_number (roll number) and the employer has submitted
-    the certificate image.
-
-    Steps:
-      1. Look up cert_number in local DB → get stored cert_hash.
-      2. Compare submitted_cert_hash with stored cert_hash.
-      3. If they match, run full HMAC + IPFS + blockchain verification.
-      4. Optionally verify the holder's name against the stored issued_to hash.
-
     Args:
         cert_number:           Roll/certificate number from the DigiLocker document.
         submitted_cert_hash:   SHA-256 of the certificate image submitted by employer.
-        digilocker_name:       Name as returned by DigiLocker (optional; used for
-                               identity check if issued_to was stored at issuance).
+        digilocker_name:       Name as returned by DigiLocker (optional).
 
     Returns:
         dict with valid, identity_verified, and full verification detail.
@@ -410,9 +428,13 @@ def verify_by_cert_number(
             "reason": f"No certificate found with cert_number='{cert_number}'",
         }
 
-    stored_cert_hash, tx_id, hmac_key, hmac_value, ipfs_cid, issued_to = row
+    stored_cert_hash = row["cert_hash"]
+    tx_id            = row["tx_id"]
+    hmac_key         = row["hmac_key"]
+    hmac_value       = row["hmac_value"]
+    ipfs_cid         = row["ipfs_cid"]
+    issued_to        = row["issued_to"]
 
-    # ── Hash match: submitted image == the image issued by the institution? ──
     if submitted_cert_hash != stored_cert_hash:
         return {
             "valid":  False,
@@ -420,12 +442,10 @@ def verify_by_cert_number(
             "detail": "The submitted file has been modified or is not the original",
         }
 
-    # ── Full blockchain + HMAC verification ───────────────────────────────────
     result = _verify_full(stored_cert_hash, tx_id, ipfs_cid, hmac_key, hmac_value)
     if not result.get("valid"):
         return result
 
-    # ── Identity check (optional) ─────────────────────────────────────────────
     identity_verified = False
     identity_detail   = "Identity check skipped — name not provided"
 

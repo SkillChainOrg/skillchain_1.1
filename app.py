@@ -24,7 +24,6 @@ import io
 import logging
 import os
 import secrets
-import sqlite3
 import time
 import zipfile
 import json as _json
@@ -54,6 +53,7 @@ from digilocker_service import (
 )
 from queue_service import queue_batch, get_batch_status
 import db_migrations
+from db import get_db_connection
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -68,7 +68,6 @@ limiter = Limiter(
 )
 
 ADMIN_KEY = os.getenv("ADMIN_KEY", "skillchain-admin-secret")
-DB_PATH   = os.getenv("DB_PATH",   "skillchain.db")
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 db_migrations.run_migrations()   # creates/alters all tables first
@@ -392,19 +391,21 @@ def admin_revoke_issuer(institution_id):
     data   = request.get_json(silent=True) or {}
     reason = data.get("reason", "")
 
-    conn = sqlite3.connect(DB_PATH)
-    cur  = conn.execute(
+    conn = get_db_connection()
+    cur  = conn.cursor()
+    cur.execute(
         """
         UPDATE did_registry
         SET revoked        = 1,
-            revoked_at     = ?,
-            revoked_reason = ?
-        WHERE institution_id = ?
+            revoked_at     = %s,
+            revoked_reason = %s
+        WHERE institution_id = %s
         """,
         (time.strftime("%Y-%m-%dT%H:%M:%SZ"), reason, institution_id),
     )
     conn.commit()
     rows_affected = cur.rowcount
+    cur.close()
     conn.close()
 
     if rows_affected == 0:
