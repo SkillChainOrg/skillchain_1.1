@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Database
+*.db
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtual envs
+venv/
+venv312/
+skill_contracts/.venv/
+
+# Algorand / Algokit
+skill_contracts/.algokit/
+skill_contracts/debug_traces/
+skill_contracts/projects/**/artifacts/

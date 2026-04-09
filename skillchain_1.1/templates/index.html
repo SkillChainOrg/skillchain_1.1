@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SkillChain</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #f5f5f5; --surface: #ffffff; --border: #e5e5e5;
+      --text: #1a1a1a; --muted: #666; --accent: #1a1a1a;
+      --green: #0f6e56; --green-bg: #f0faf5; --green-border: #5dcaa5;
+      --red: #a32d2d; --red-bg: #fef2f2; --red-border: #fca5a5;
+      --blue: #2563eb; --amber: #854f0b; --amber-bg: #faeeda;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+    /* NAV */
+    nav { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 24px; display: flex; align-items: center; gap: 8px; height: 52px; position: sticky; top: 0; z-index: 100; }
+    .nav-brand { font-size: 16px; font-weight: 700; margin-right: auto; cursor: pointer; letter-spacing: -.3px; }
+    .nav-link { padding: 6px 12px; font-size: 13px; border-radius: 6px; cursor: pointer; color: var(--muted); border: none; background: none; transition: all .15s; white-space: nowrap; }
+    .nav-link:hover { background: var(--bg); color: var(--text); }
+    .nav-link.active { background: var(--accent); color: white; }
+
+    /* PAGES */
+    .page { display: none; max-width: 600px; margin: 40px auto; padding: 0 20px 60px; }
+    .page.active { display: block; }
+
+    /* LANDING */
+    .hero { text-align: center; padding: 48px 0 32px; }
+    .hero h1 { font-size: 32px; font-weight: 700; margin-bottom: 12px; }
+    .hero p { font-size: 15px; color: var(--muted); max-width: 420px; margin: 0 auto 32px; line-height: 1.6; }
+    .hero-btns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+    .btn-primary { padding: 10px 24px; font-size: 14px; font-weight: 500; background: var(--accent); color: white; border: none; border-radius: 8px; cursor: pointer; transition: opacity .15s; }
+    .btn-primary:hover { opacity: .85; }
+    .btn-outline { padding: 10px 24px; font-size: 14px; font-weight: 500; background: white; color: var(--text); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: all .15s; }
+    .btn-outline:hover { border-color: #999; }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 40px; }
+    .stat { background: white; border: 1px solid var(--border); border-radius: 10px; padding: 20px 16px; text-align: center; }
+    .stat-num { font-size: 22px; font-weight: 700; color: var(--green); }
+    .stat-label { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+    .how-it-works { margin-top: 48px; }
+    .how-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
+    .step { display: flex; gap: 14px; margin-bottom: 16px; align-items: flex-start; }
+    .step-num { min-width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: white; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
+    .step-body { font-size: 13px; line-height: 1.6; color: var(--muted); }
+    .step-body strong { color: var(--text); }
+
+    /* CARDS */
+    .card { background: white; border-radius: 12px; padding: 24px; border: 1px solid var(--border); margin-bottom: 16px; }
+    .card-title { font-size: 15px; font-weight: 600; margin-bottom: 16px; }
+    label { font-size: 13px; font-weight: 500; display: block; margin-bottom: 6px; color: #444; }
+    input[type=text], input[type=email], input[type=password], select, textarea {
+      width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid var(--border);
+      border-radius: 8px; background: white; color: var(--text); margin-bottom: 14px;
+      transition: border-color .15s; outline: none; font-family: inherit;
+    }
+    input:focus, select:focus, textarea:focus { border-color: #999; }
+    .file-drop { border: 1.5px dashed var(--border); border-radius: 8px; padding: 28px; text-align: center; cursor: pointer; transition: border-color .15s; margin-bottom: 14px; }
+    .file-drop:hover { border-color: #999; }
+    .file-drop.has-file { border-color: var(--accent); border-style: solid; }
+    .file-icon { font-size: 24px; margin-bottom: 6px; }
+    .file-hint { font-size: 13px; color: var(--muted); }
+    .file-name { font-size: 13px; color: var(--text); font-weight: 500; margin-top: 4px; }
+    .submit-btn { width: 100%; padding: 12px; font-size: 14px; font-weight: 500; background: var(--accent); color: white; border: none; border-radius: 8px; cursor: pointer; transition: opacity .15s; display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .submit-btn:hover { opacity: .85; }
+    .submit-btn:disabled { opacity: .4; cursor: default; }
+    .spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: white; border-radius: 50%; animation: spin .6s linear infinite; display: none; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* RESULTS */
+    .result { margin-top: 16px; padding: 16px; border-radius: 10px; display: none; }
+    .result.success { background: var(--green-bg); border: 1px solid var(--green-border); }
+    .result.error { background: var(--red-bg); border: 1px solid var(--red-border); }
+    .result.warning { background: var(--amber-bg); border: 1px solid #EF9F27; }
+    .result-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+    .result-title.ok { color: var(--green); }
+    .result-title.fail { color: var(--red); }
+    .check-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgba(0,0,0,.06); font-size: 13px; }
+    .check-row:last-child { border-bottom: none; }
+    .check-icon { font-size: 14px; min-width: 18px; }
+    .check-label { color: var(--muted); flex: 1; }
+    .check-value { font-weight: 500; text-align: right; font-size: 12px; }
+    .tx-link { color: var(--blue); text-decoration: none; font-size: 12px; }
+    .tx-link:hover { text-decoration: underline; }
+    .qr-section { margin-top: 16px; text-align: center; }
+    .qr-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+    #qrcode { display: inline-block; }
+    #qrcode img, #qrcode canvas { border-radius: 8px; }
+
+    /* DIGILOCKER */
+    .dl-btn { width: 100%; padding: 12px; font-size: 14px; font-weight: 500; background: #1a237e; color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 8px; transition: opacity .15s; }
+    .dl-btn:hover { opacity: .85; }
+    .divider { display: flex; align-items: center; gap: 12px; margin: 16px 0; }
+    .divider-line { flex: 1; height: 1px; background: var(--border); }
+    .divider-text { font-size: 12px; color: var(--muted); }
+
+    /* ADMIN */
+    .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 99px; font-weight: 500; }
+    .badge-pending { background: var(--amber-bg); color: var(--amber); }
+    .badge-approved { background: var(--green-bg); color: var(--green); }
+    .pending-card { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; }
+    .pending-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .pending-name { font-size: 14px; font-weight: 600; }
+    .pending-meta { font-size: 12px; color: var(--muted); line-height: 1.6; }
+    .approve-btn { padding: 6px 14px; font-size: 12px; font-weight: 500; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; margin-top: 10px; }
+    .approve-btn:hover { opacity: .85; }
+    .empty-state { text-align: center; padding: 40px; color: var(--muted); font-size: 14px; }
+
+    /* REGISTER */
+    .info-box { background: #f0f4ff; border: 1px solid #c7d7f9; border-radius: 8px; padding: 12px 14px; font-size: 13px; color: #1e3a8a; line-height: 1.6; margin-bottom: 16px; }
+
+    @media (max-width: 480px) {
+      .stats { grid-template-columns: 1fr; }
+      nav { padding: 0 12px; gap: 4px; }
+      .nav-link { padding: 6px 8px; font-size: 12px; }
+      .hero h1 { font-size: 24px; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-brand" onclick="goto('home')">SkillChain</div>
+  <button class="nav-link active" id="nav-home" onclick="goto('home')">Home</button>
+  <button class="nav-link" id="nav-issue" onclick="goto('issue')">Issue</button>
+  <button class="nav-link" id="nav-verify" onclick="goto('verify')">Verify</button>
+  <button class="nav-link" id="nav-register" onclick="goto('register')">Register</button>
+  <button class="nav-link" id="nav-admin" onclick="goto('admin')">Admin</button>
+</nav>
+
+<!-- HOME -->
+<div class="page active" id="page-home">
+  <div class="hero">
+    <h1>Trust, Cryptographically.</h1>
+    <p>SkillChain anchors certificate hashes to the Algorand blockchain. Verify any academic or professional credential in under 10 seconds — no phone calls, no waiting, no fraud.</p>
+    <div class="hero-btns">
+      <button class="btn-primary" onclick="goto('verify')">Verify a certificate</button>
+      <button class="btn-outline" onclick="goto('register')">Register your institution</button>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="stat-num">&lt;10s</div><div class="stat-label">Verification time</div></div>
+      <div class="stat"><div class="stat-num">~₹0.03</div><div class="stat-label">Cost per verification</div></div>
+      <div class="stat"><div class="stat-num">6,000+</div><div class="stat-label">TPS on Algorand</div></div>
+    </div>
+  </div>
+  <div class="how-it-works">
+    <div class="how-title">How it works</div>
+    <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Institution registers</strong> — gets a DID anchored on Algorand and an API key to issue credentials.</div></div>
+    <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Certificate is issued</strong> — SHA-256 hash + name hash anchored to Algorand in under 4 seconds. QR code embedded.</div></div>
+    <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Anyone verifies</strong> — upload the certificate or scan the QR. Two cryptographic checks: integrity + issuer provenance.</div></div>
+    <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Identity confirmed</strong> — optionally verify via DigiLocker. Aadhaar name matched against the anchored name hash.</div></div>
+  </div>
+</div>
+
+<!-- ISSUE -->
+<div class="page" id="page-issue">
+  <div class="card">
+    <div class="card-title">Issue certificate</div>
+    <label>Institution API key</label>
+    <input type="password" id="issue-apikey" placeholder="Your institution API key" oninput="checkIssueReady()">
+    <label>Certificate file (PNG / JPG)</label>
+    <div class="file-drop" id="issue-drop" onclick="document.getElementById('issue-file').click()">
+      <div class="file-icon">📄</div>
+      <div class="file-hint">Click to upload or drag and drop</div>
+      <div class="file-name" id="issue-filename"></div>
+    </div>
+    <input type="file" id="issue-file" accept=".png,.jpg,.jpeg" style="display:none" onchange="handleFile(this,'issue')">
+    <label>Holder name (as on Aadhaar)</label>
+    <input type="text" id="issue-name" placeholder="Full name of certificate holder" oninput="checkIssueReady()">
+    <label>Document type</label>
+    <select id="issue-doctype">
+      <option value="academic">Academic certificate</option>
+      <option value="employment">Employment certificate</option>
+      <option value="internship">Internship certificate</option>
+    </select>
+    <button class="submit-btn" id="issue-btn" onclick="issueCert()" disabled>
+      <span id="issue-label">Issue certificate</span>
+      <div class="spinner" id="issue-spinner"></div>
+    </button>
+    <div class="result" id="issue-result"></div>
+    <div class="qr-section" id="qr-section" style="display:none">
+      <div class="qr-label">Scan to verify this certificate</div>
+      <div id="qrcode"></div>
+    </div>
+  </div>
+</div>
+
+<!-- VERIFY -->
+<div class="page" id="page-verify">
+  <div class="card">
+    <div class="card-title">Verify certificate</div>
+    <label>Certificate file (PNG / JPG)</label>
+    <div class="file-drop" id="verify-drop" onclick="document.getElementById('verify-file').click()">
+      <div class="file-icon">🔍</div>
+      <div class="file-hint">Click to upload or drag and drop</div>
+      <div class="file-name" id="verify-filename"></div>
+    </div>
+    <input type="file" id="verify-file" accept=".png,.jpg,.jpeg" style="display:none" onchange="handleFile(this,'verify')">
+    <button class="submit-btn" id="verify-btn" onclick="verifyCert()" disabled>
+      <span id="verify-label">Verify certificate</span>
+      <div class="spinner" id="verify-spinner"></div>
+    </button>
+    <div class="divider"><div class="divider-line"></div><div class="divider-text">or verify identity via</div><div class="divider-line"></div></div>
+    <button class="dl-btn" onclick="startDigiLocker()">Verify via DigiLocker + Aadhaar</button>
+    <div class="result" id="verify-result"></div>
+  </div>
+</div>
+
+<!-- REGISTER -->
+<div class="page" id="page-register">
+  <div class="card">
+    <div class="card-title">Register your institution</div>
+    <div class="info-box">After submitting, you'll receive an email to verify your domain. Once verified, an admin will review and approve your registration. You'll then receive your API key to start issuing certificates.</div>
+    <label>Institution name</label>
+    <input type="text" id="reg-name" placeholder="e.g. IIT Bombay">
+    <label>Official email address</label>
+    <input type="email" id="reg-email" placeholder="admin@iitb.ac.in">
+    <label>Official domain</label>
+    <input type="text" id="reg-domain" placeholder="iitb.ac.in">
+    <button class="submit-btn" onclick="registerInstitution()">
+      <span id="reg-label">Submit registration</span>
+      <div class="spinner" id="reg-spinner"></div>
+    </button>
+    <div class="result" id="reg-result"></div>
+  </div>
+</div>
+
+<!-- ADMIN -->
+<div class="page" id="page-admin">
+  <div class="card">
+    <div class="card-title">Admin panel</div>
+    <label>Admin key</label>
+    <input type="password" id="admin-key" placeholder="Enter admin key">
+    <button class="submit-btn" onclick="loadPending()">Load pending registrations</button>
+  </div>
+  <div id="pending-list"></div>
+</div>
+
+<script>
+const pages = ['home','issue','verify','register','admin'];
+
+function goto(page) {
+  pages.forEach(p => {
+    document.getElementById('page-' + p).classList.toggle('active', p === page);
+    document.getElementById('nav-' + p).classList.toggle('active', p === page);
+  });
+  if (page === 'verify') {
+    const params = new URLSearchParams(window.location.search);
+    const txid = params.get('txid');
+    if (txid) handleQRVerify(txid);
+  }
+}
+
+function handleFile(input, prefix) {
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById(prefix + '-filename').textContent = file.name;
+  document.getElementById(prefix + '-drop').classList.add('has-file');
+  if (prefix === 'verify') document.getElementById('verify-btn').disabled = false;
+  if (prefix === 'issue') checkIssueReady();
+}
+
+function checkIssueReady() {
+  const key = document.getElementById('issue-apikey').value.trim();
+  const name = document.getElementById('issue-name').value.trim();
+  const file = document.getElementById('issue-file').files[0];
+  document.getElementById('issue-btn').disabled = !(key && name && file);
+}
+
+function setLoading(prefix, on) {
+  document.getElementById(prefix + '-btn').disabled = on;
+  document.getElementById(prefix + '-label').style.display = on ? 'none' : 'inline';
+  document.getElementById(prefix + '-spinner').style.display = on ? 'block' : 'none';
+}
+
+function showIssueResult(data) {
+  const el = document.getElementById('issue-result');
+  el.style.display = 'block';
+  if (data.success) {
+    el.className = 'result success';
+    el.innerHTML = `
+      <div class="result-title ok">Certificate issued</div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Issued by</span><span class="check-value">${data.issued_by}</span></div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Hash anchored</span><span class="check-value">${data.cert_hash.slice(0,16)}...</span></div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Identity hash</span><span class="check-value">Anchored</span></div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Transaction</span><span class="check-value"><a class="tx-link" href="${data.explorer_url}" target="_blank">${data.tx_id.slice(0,18)}...</a></span></div>
+    `;
+    const qrSection = document.getElementById('qr-section');
+    qrSection.style.display = 'block';
+    document.getElementById('qrcode').innerHTML = '';
+    const verifyUrl = `${window.location.origin}/verify?txid=${data.tx_id}`;
+    new QRCode(document.getElementById('qrcode'), {
+      text: verifyUrl, width: 160, height: 160,
+      colorDark: "#1a1a1a", colorLight: "#ffffff",
+      correctLevel: QRCode.CorrectLevel.M
+    });
+  } else {
+    el.className = 'result error';
+    el.innerHTML = `<div class="result-title fail">Issuance failed</div><div style="font-size:13px;color:var(--red)">${data.error || 'Unknown error'}</div>`;
+  }
+}
+
+function showVerifyResult(data) {
+  const el = document.getElementById('verify-result');
+  el.style.display = 'block';
+  if (data.valid) {
+    el.className = 'result success';
+    const identityRow = data.identity_verified !== undefined
+      ? `<div class="check-row"><span class="check-icon">${data.identity_verified ? '✓' : '⚠'}</span><span class="check-label">Identity verified</span><span class="check-value">${data.identity_check || (data.identity_verified ? 'Aadhaar match' : 'Not verified')}</span></div>`
+      : '';
+    const sourceRow = data.source
+      ? `<div class="check-row"><span class="check-icon">✓</span><span class="check-label">Document source</span><span class="check-value">${data.source}</span></div>`
+      : '';
+    el.innerHTML = `
+      <div class="result-title ok">Certificate valid</div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Integrity</span><span class="check-value">Hash matches on-chain record</span></div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Document type</span><span class="check-value">${data.doc_type}</span></div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Issued on</span><span class="check-value">${data.issued_at}</span></div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Confirmed at block</span><span class="check-value">${data.confirmed_round}</span></div>
+      ${identityRow}
+      ${sourceRow}
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Transaction</span><span class="check-value"><a class="tx-link" href="${data.explorer_url}" target="_blank">${data.tx_id.slice(0,18)}...</a></span></div>
+    `;
+  } else {
+    el.className = 'result error';
+    el.innerHTML = `<div class="result-title fail">Certificate invalid</div><div style="font-size:13px;color:var(--red);margin-top:4px">${data.reason || data.error || 'Verification failed'}</div>`;
+  }
+}
+
+async function issueCert() {
+  const file = document.getElementById('issue-file').files[0];
+  const apiKey = document.getElementById('issue-apikey').value.trim();
+  const holderName = document.getElementById('issue-name').value.trim();
+  const docType = document.getElementById('issue-doctype').value;
+  if (!file || !apiKey || !holderName) return;
+  setLoading('issue', true);
+  document.getElementById('qr-section').style.display = 'none';
+  const form = new FormData();
+  form.append('certificate', file);
+  form.append('doc_type', docType);
+  form.append('holder_name', holderName);
+  try {
+    const res = await fetch('/issue', { method: 'POST', headers: { 'X-API-Key': apiKey }, body: form });
+    const data = await res.json();
+    showIssueResult(data);
+  } catch(e) {
+    showIssueResult({ error: 'Request failed — is Flask running?' });
+  }
+  setLoading('issue', false);
+}
+
+async function verifyCert() {
+  const file = document.getElementById('verify-file').files[0];
+  if (!file) return;
+  setLoading('verify', true);
+  const form = new FormData();
+  form.append('certificate', file);
+  try {
+    const res = await fetch('/verify', { method: 'POST', body: form });
+    const data = await res.json();
+    showVerifyResult(data);
+  } catch(e) {
+    showVerifyResult({ reason: 'Request failed — is Flask running?' });
+  }
+  setLoading('verify', false);
+}
+
+async function handleQRVerify(txid) {
+  const el = document.getElementById('verify-result');
+  el.style.display = 'block';
+  el.className = 'result warning';
+  el.innerHTML = '<div style="font-size:13px;color:var(--amber)">QR scan detected. Upload the certificate file above to complete verification.</div>';
+  sessionStorage.setItem('pending_txid', txid);
+}
+
+async function startDigiLocker() {
+  try {
+    const res = await fetch('/digilocker/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redirect_url: window.location.origin + '/digilocker/callback' })
+    });
+    const data = await res.json();
+    if (data.digilocker_url) {
+      sessionStorage.setItem('dl_request_id', data.request_id);
+      window.location.href = data.digilocker_url;
+    }
+  } catch(e) {
+    alert('Could not start DigiLocker flow');
+  }
+}
+
+async function registerInstitution() {
+  const name = document.getElementById('reg-name').value.trim();
+  const email = document.getElementById('reg-email').value.trim();
+  const domain = document.getElementById('reg-domain').value.trim();
+  if (!name || !email || !domain) { alert('All fields required'); return; }
+  document.getElementById('reg-label').style.display = 'none';
+  document.getElementById('reg-spinner').style.display = 'block';
+  try {
+    const res = await fetch('/request-registration', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ institution_name: name, email, domain })
+    });
+    const data = await res.json();
+    const el = document.getElementById('reg-result');
+    el.style.display = 'block';
+    if (data.registration_id) {
+      el.className = 'result success';
+      el.innerHTML = `
+        <div class="result-title ok">Registration submitted</div>
+        <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Registration ID</span><span class="check-value">${data.registration_id}</span></div>
+        <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Status</span><span class="check-value">Pending email verification</span></div>
+        <div style="font-size:12px;color:var(--muted);margin-top:8px">Check ${email} for a verification link. After verifying, an admin will review your application.</div>
+      `;
+    } else {
+      el.className = 'result error';
+      el.innerHTML = `<div class="result-title fail">Submission failed</div><div style="font-size:13px">${data.error || 'Unknown error'}</div>`;
+    }
+  } catch(e) {
+    const el = document.getElementById('reg-result');
+    el.style.display = 'block';
+    el.className = 'result error';
+    el.innerHTML = '<div class="result-title fail">Request failed</div>';
+  }
+  document.getElementById('reg-label').style.display = 'inline';
+  document.getElementById('reg-spinner').style.display = 'none';
+}
+
+async function loadPending() {
+  const key = document.getElementById('admin-key').value.trim();
+  if (!key) { alert('Enter admin key'); return; }
+  try {
+    const res = await fetch('/admin/pending', { headers: { 'X-Admin-Key': key } });
+    const data = await res.json();
+    const container = document.getElementById('pending-list');
+    if (data.error) {
+      container.innerHTML = `<div class="card"><div style="color:var(--red);font-size:13px">${data.error}</div></div>`;
+      return;
+    }
+    if (!data.length) {
+      container.innerHTML = '<div class="card"><div class="empty-state">No pending registrations</div></div>';
+      return;
+    }
+    container.innerHTML = data.map(r => `
+      <div class="pending-card">
+        <div class="pending-header">
+          <div class="pending-name">${r.institution}</div>
+          <span class="badge badge-pending">Pending</span>
+        </div>
+        <div class="pending-meta">
+          ${r.email}<br>${r.domain}<br>Submitted: ${r.created_at}
+        </div>
+        <button class="approve-btn" onclick="approve('${r.id}', '${key}', this)">Approve & issue DID</button>
+      </div>
+    `).join('');
+  } catch(e) {
+    document.getElementById('pending-list').innerHTML = '<div class="card"><div style="font-size:13px;color:var(--red)">Request failed</div></div>';
+  }
+}
+
+async function approve(id, key, btn) {
+  btn.textContent = 'Approving...';
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/admin/approve/${id}`, { method: 'POST', headers: { 'X-Admin-Key': key } });
+    const data = await res.json();
+    if (data.success) {
+      const card = btn.closest('.pending-card');
+      card.innerHTML = `
+        <div class="pending-header">
+          <div class="pending-name">${data.institution}</div>
+          <span class="badge badge-approved">Approved</span>
+        </div>
+        <div class="pending-meta" style="margin-top:6px">
+          DID: ${data.did}<br>
+          <strong>API Key: ${data.api_key}</strong><br>
+          <a class="tx-link" href="${data.explorer_url}" target="_blank">View DID transaction</a>
+        </div>
+      `;
+    } else {
+      btn.textContent = 'Failed — try again';
+      btn.disabled = false;
+    }
+  } catch(e) {
+    btn.textContent = 'Failed — try again';
+    btn.disabled = false;
+  }
+}
+
+// handle DigiLocker callback redirect
+const params = new URLSearchParams(window.location.search);
+if (params.get('id')) {
+  const reqId = params.get('id');
+  goto('verify');
+  fetch(`/digilocker/callback?id=${reqId}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        const docType = prompt('Document type (e.g. DGDEG for degree):', 'DGDEG') || 'DGDEG';
+        const orgId = prompt('Issuing org ID (e.g. in.gov.cbse):', 'in.gov.cbse') || 'in.gov.cbse';
+        return fetch('/digilocker/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ request_id: reqId, doc_type: docType, org_id: orgId })
+        });
+      }
+    })
+    .then(r => r && r.json())
+    .then(data => data && showVerifyResult(data))
+    .catch(() => {});
+}
+</script>
+</body>
+</html>
