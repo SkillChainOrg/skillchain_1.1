@@ -20,6 +20,8 @@ from nacl.signing import SigningKey
 from nacl.encoding import RawEncoder
 from dotenv import load_dotenv
 
+from db import get_db_connection
+
 load_dotenv()
 
 # Vault path segment used for the system-level (shared) issuer wallet
@@ -86,15 +88,19 @@ def _load_private_key(institution_id: str | None) -> str:
         return mn.to_private_key(phrase)
 
     # Per-institution dev mode: fetch AES-GCM encrypted key from did_registry
-    import sqlite3
+    from db import get_db_connection
     from key_vault import decrypt_key
 
-    db_path = os.getenv("DB_PATH", "skillchain.db")
-    conn = sqlite3.connect(db_path)
-    row = conn.execute(
-        "SELECT private_key_enc, key_nonce FROM did_registry WHERE institution_id = ?",
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT private_key_enc, key_nonce FROM did_registry WHERE institution_id = %s",
         (institution_id,),
-    ).fetchone()
+)
+    row = cur.fetchone()
+
+    cur.close()
     conn.close()
 
     if not row or not row[0]:
