@@ -51,6 +51,7 @@ from digilocker_service import (
     hash_document_data,
     revoke_access,
 )
+from identity_service import bind_identity, lookup_identity
 from queue_service import queue_batch, get_batch_status
 import db_migrations
 from db import get_db_connection
@@ -226,7 +227,72 @@ def digilocker_callback():
         "success":    True,
         "request_id": request_id,
         "user":       status["user"],
-        "message":    "Consent received. Call /digilocker/verify to fetch and verify document.",
+        "message":    "Consent received. Call /digilocker/bind to create identity anchor, then /digilocker/verify.",
+    })
+
+
+@app.route("/digilocker/bind", methods=["POST"])
+@limiter.limit("20 per minute")
+def digilocker_bind():
+    """
+    Bind a DigiLocker-verified identity to a SkillChain DID.
+
+    Called after the user completes the DigiLocker consent flow.
+    Creates a permanent identity anchor (did:skillchain:identity:...) that
+    links the government-verified Aadhaar name to a stable DID.
+
+    Body (JSON):
+        digilocker_id   : Stable user ID from Setu (required)
+        digilocker_name : Government-verified name from the session (required)
+
+    Returns:
+        identity_did    : The person's permanent SkillChain identity DID
+        created         : True if this is a new anchor, False if it already existed
+    """
+    data = request.get_json()
+    digilocker_id   = data.get("digilocker_id")
+    digilocker_name = data.get("digilocker_name")
+
+    if not digilocker_id or not digilocker_name:
+        return jsonify({"error": "digilocker_id and digilocker_name are required"}), 400
+
+    try:
+        anchor = bind_identity(digilocker_id, digilocker_name)
+        return jsonify({
+            "success":      True,
+            "identity_did": anchor["identity_did"],
+            "created":      anchor["created"],
+            "message":      (
+                "Identity anchor created — this DID is your permanent credential identity"
+                if anchor["created"]
+                else "Existing identity anchor returned"
+            ),
+        })
+    except Exception as exc:
+        log.error("Identity bind failed: %s", exc)
+        return jsonify({"error": "Identity binding failed"}), 500
+
+
+@app.route("/digilocker/identity/<digilocker_id>", methods=["GET"])
+@limiter.limit("30 per minute")
+def digilocker_get_identity(digilocker_id: str):
+    """
+    Look up the identity DID for a DigiLocker user ID.
+
+    Used by institutions and employers to resolve a person's SkillChain DID
+    from their DigiLocker ID without re-running the consent flow.
+    """
+    api_key = request.headers.get("X-API-Key")
+    if not validate_api_key(api_key):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    anchor = lookup_identity(digilocker_id)
+    if not anchor:
+        return jsonify({"error": "No identity anchor found for this DigiLocker ID"}), 404
+
+    return jsonify({
+        "identity_did": anchor["identity_did"],
+        "bound_at":     anchor["bound_at"],
     })
 
 
@@ -234,25 +300,35 @@ def digilocker_callback():
 @limiter.limit("20 per minute")
 def digilocker_verify():
     """
-    Verify a certificate via DigiLocker.
+    Verify a certificate via DigiLocker with full identity binding.
+
+    This is the full three-layer check:
+      1. Identity layer  — DigiLocker → identity_did (DID-bound to Aadhaar name)
+      2. Document layer  — cert_number from DigiLocker doc → on-chain cert lookup
+      3. Ownership layer — identity_did name_hash vs cert's issued_to hash
 
     Body (JSON):
         request_id          : Setu DigiLocker session ID (required)
         doc_type            : DigiLocker document type code (default: "DGDEG")
         org_id              : Issuing org ID (default: "in.gov.cbse")
         submitted_cert_hash : SHA-256 of the certificate image uploaded by the
-                              employer.  If omitted, the image-match step is
-                              skipped and only cert_number lookup + HMAC/chain
-                              checks run.
+                              employer (normalize_and_hash output). REQUIRED —
+                              proves the employer physically holds the document.
     """
-    data                 = request.get_json()
-    request_id           = data.get("request_id")
-    doc_type             = data.get("doc_type", "DGDEG")
-    org_id               = data.get("org_id",  "in.gov.cbse")
-    submitted_cert_hash  = data.get("submitted_cert_hash")   # optional
+    data                = request.get_json()
+    request_id          = data.get("request_id")
+    doc_type            = data.get("doc_type", "DGDEG")
+    org_id              = data.get("org_id",  "in.gov.cbse")
+    submitted_cert_hash = data.get("submitted_cert_hash")
 
     if not request_id:
         return jsonify({"error": "request_id required"}), 400
+
+    if not submitted_cert_hash:
+        return jsonify({
+            "error":  "submitted_cert_hash is required",
+            "detail": "Upload the certificate image and include its SHA-256 hash",
+        }), 400
 
     from digilocker_service import verify_with_identity
     return jsonify(

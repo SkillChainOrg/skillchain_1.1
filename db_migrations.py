@@ -111,6 +111,28 @@ def run_migrations() -> None:
             )
         """)
 
+        # ── identity_anchors (Option 3 — DID-bound identity) ─
+        # Stores the permanent link between a DigiLocker user and their
+        # SkillChain identity DID.  No raw PII — only hashes.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS identity_anchors (
+                id             SERIAL PRIMARY KEY,
+                identity_did   TEXT UNIQUE NOT NULL,
+                digilocker_id  TEXT UNIQUE NOT NULL,
+                name_hash      TEXT NOT NULL,
+                bound_at       TEXT NOT NULL
+            )
+        """)
+        # Indexes for fast lookup in both directions
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_identity_anchors_digilocker_id
+            ON identity_anchors (digilocker_id)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_identity_anchors_identity_did
+            ON identity_anchors (identity_did)
+        """)
+
         conn.commit()
         log.info("DB migrations completed successfully (PostgreSQL).")
 

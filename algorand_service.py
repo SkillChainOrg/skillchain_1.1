@@ -446,25 +446,14 @@ def verify_by_cert_number(
     if not result.get("valid"):
         return result
 
-    identity_verified = False
-    identity_detail   = "Identity check skipped — name not provided"
-
-    if digilocker_name and issued_to:
-        name_hash = hashlib.sha256(
-            digilocker_name.strip().lower().encode()
-        ).hexdigest()
-        identity_verified = hmac_lib.compare_digest(name_hash, issued_to)
-        identity_detail   = (
-            "DigiLocker name matches certificate holder"
-            if identity_verified
-            else "DigiLocker name does NOT match certificate holder"
-        )
-
+    # Pass issued_to up to the identity layer (identity_service.verify_identity_against_cert).
+    # Identity verification is no longer done inline here — the DID-bound identity
+    # anchor is the authoritative check.  digilocker_name is accepted for back-compat
+    # but ignored when identity_service is in use.
     return {
         **result,
-        "identity_verified": identity_verified,
-        "identity_check":    identity_detail,
-        "source":            "digilocker_cert_number_lookup",
+        "issued_to": issued_to,         # consumed by identity_service
+        "source":    "digilocker_cert_number_lookup",
     }
 
 
