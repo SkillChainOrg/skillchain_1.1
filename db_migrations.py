@@ -105,11 +105,17 @@ def run_migrations() -> None:
                 issued_at   TEXT,
                 ipfs_cid    TEXT,
                 cert_number TEXT,
-                hmac_key    TEXT,
                 hmac_value  TEXT,
                 issued_to   TEXT
             )
         """)
+
+        # Security migration: remove hmac_key from existing deployments.
+        # hmac_key was co-located with hmac_value, making HMAC trivially forgeable.
+        # The key is now a server-side secret (HMAC_SECRET env var) — never stored.
+        if _column_exists(cur, "certificates", "hmac_key"):
+            cur.execute("ALTER TABLE certificates DROP COLUMN hmac_key")
+            log.info("Security migration: dropped certificates.hmac_key column")
 
         # ── identity_anchors ─────────────────────────────────
         cur.execute("""

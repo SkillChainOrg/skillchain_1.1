@@ -33,6 +33,13 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
+HMAC_SECRET = os.getenv("HMAC_SECRET")
+if not HMAC_SECRET:
+    raise RuntimeError(
+        "HMAC_SECRET is not set. Add it to your .env file.\n"
+        "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
+
 ALGOD_URL     = os.getenv("ALGOD_URL",   "https://testnet-api.algonode.cloud")
 INDEXER_URL   = os.getenv("INDEXER_URL", "https://testnet-idx.algonode.cloud")
 ALGOD_TOKEN   = ""
@@ -54,7 +61,6 @@ def init_db():
                 issued_at   TEXT,
                 ipfs_cid    TEXT,
                 cert_number TEXT,
-                hmac_key    TEXT,
                 hmac_value  TEXT,
                 issued_to   TEXT
             )
@@ -72,7 +78,6 @@ def save_to_db(
     issued_at: str,
     ipfs_cid: str | None = None,
     cert_number: str | None = None,
-    hmac_key: str | None = None,
     hmac_value: str | None = None,
     issued_to: str | None = None,
 ) -> None:
@@ -83,20 +88,19 @@ def save_to_db(
             """
             INSERT INTO certificates
                 (cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
-                 cert_number, hmac_key, hmac_value, issued_to)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 cert_number, hmac_value, issued_to)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (cert_hash) DO UPDATE SET
                 tx_id       = EXCLUDED.tx_id,
                 doc_type    = EXCLUDED.doc_type,
                 issued_at   = EXCLUDED.issued_at,
                 ipfs_cid    = EXCLUDED.ipfs_cid,
                 cert_number = EXCLUDED.cert_number,
-                hmac_key    = EXCLUDED.hmac_key,
                 hmac_value  = EXCLUDED.hmac_value,
                 issued_to   = EXCLUDED.issued_to
             """,
             (cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
-             cert_number, hmac_key, hmac_value, issued_to),
+             cert_number, hmac_value, issued_to),
         )
         conn.commit()
     finally:
@@ -105,13 +109,13 @@ def save_to_db(
 
 
 def lookup_hash(cert_hash: str) -> dict | None:
-    """Return dict with tx_id, hmac_key, hmac_value, cert_number, ipfs_cid — or None."""
+    """Return dict with tx_id, hmac_value, cert_number, ipfs_cid — or None."""
     conn = get_db_connection()
     cur  = dict_cursor(conn)
     try:
         cur.execute(
             """
-            SELECT tx_id, hmac_key, hmac_value, cert_number, ipfs_cid
+            SELECT tx_id, hmac_value, cert_number, ipfs_cid
             FROM certificates WHERE cert_hash = %s
             """,
             (cert_hash,),
@@ -124,13 +128,13 @@ def lookup_hash(cert_hash: str) -> dict | None:
 
 
 def lookup_by_cert_number(cert_number: str) -> dict | None:
-    """Return dict with cert_hash, tx_id, hmac_key, hmac_value, ipfs_cid, issued_to — or None."""
+    """Return dict with cert_hash, tx_id, hmac_value, ipfs_cid, issued_to — or None."""
     conn = get_db_connection()
     cur  = dict_cursor(conn)
     try:
         cur.execute(
             """
-            SELECT cert_hash, tx_id, hmac_key, hmac_value, ipfs_cid, issued_to
+            SELECT cert_hash, tx_id, hmac_value, ipfs_cid, issued_to
             FROM certificates WHERE cert_number = %s
             """,
             (cert_number,),
@@ -154,15 +158,16 @@ def get_indexer_client():
 
 # ── HMAC helpers ──────────────────────────────────────────────────────────────
 
-def _generate_hmac_key() -> str:
-    """Generate a 32-byte random HMAC key (hex-encoded)."""
-    return secrets.token_hex(32)
+def generate_hmac(cert_hash: str) -> str:
+    """
+    Return HMAC-SHA256(HMAC_SECRET, cert_hash) as a hex string.
 
-
-def _compute_hmac(hmac_key_hex: str, cert_hash: str) -> str:
-    """Return HMAC-SHA256(key, cert_hash) as a hex string."""
-    key = bytes.fromhex(hmac_key_hex)
-    return hmac_lib.new(key, cert_hash.encode(), hashlib.sha256).hexdigest()
+    The secret is loaded once from the environment at module startup.
+    Never stored in the DB — recomputed on demand for verification.
+    """
+    return hmac_lib.new(
+        HMAC_SECRET.encode(), cert_hash.encode(), hashlib.sha256
+    ).hexdigest()
 
 
 # ── Core: anchor a certificate hash on Algorand ───────────────────────────────
@@ -206,8 +211,7 @@ def anchor_hash(
     client    = get_algod_client()
     issued_at = time.strftime("%Y-%m-%d")
 
-    hmac_key   = _generate_hmac_key()
-    hmac_value = _compute_hmac(hmac_key, cert_hash)
+    hmac_value = generate_hmac(cert_hash)
 
     issued_by  = institution.get("institution") if isinstance(institution, dict) else str(institution)
     issuer_did = institution.get("did", "")     if isinstance(institution, dict) else ""
@@ -242,7 +246,6 @@ def anchor_hash(
     save_to_db(
         cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
         cert_number=cert_number,
-        hmac_key=hmac_key,
         hmac_value=hmac_value,
         issued_to=issued_to,
     )
@@ -274,7 +277,6 @@ def verify_hash(cert_hash: str) -> dict:
             cert_hash,
             row["tx_id"],
             row["ipfs_cid"],
-            row["hmac_key"],
             row["hmac_value"],
         )
     return _verify_via_indexer(cert_hash)
@@ -284,7 +286,6 @@ def _verify_full(
     cert_hash: str,
     tx_id: str,
     ipfs_cid: str,
-    stored_hmac_key: str | None,
     stored_hmac_value: str | None,
 ) -> dict:
     """Full verification against IPFS metadata and Algorand transaction."""
@@ -304,9 +305,11 @@ def _verify_full(
         return {"valid": False, "reason": "IPFS hash mismatch — data tampered"}
 
     # ── HMAC tamper-evidence check ─────────────────────────────────────────
+    # Always recompute from the stored cert_hash using the server-side secret.
+    # Never trust user-submitted values for this comparison.
     hmac_ok = False
-    if stored_hmac_key and stored_hmac_value:
-        recomputed = _compute_hmac(stored_hmac_key, cert_hash)
+    if stored_hmac_value:
+        recomputed = generate_hmac(cert_hash)
         ipfs_hmac  = meta.get("hmac_value", "")
         hmac_ok    = (
             hmac_lib.compare_digest(recomputed, stored_hmac_value)
@@ -430,19 +433,20 @@ def verify_by_cert_number(
 
     stored_cert_hash = row["cert_hash"]
     tx_id            = row["tx_id"]
-    hmac_key         = row["hmac_key"]
     hmac_value       = row["hmac_value"]
     ipfs_cid         = row["ipfs_cid"]
     issued_to        = row["issued_to"]
 
-    if submitted_cert_hash != stored_cert_hash:
+    # Guard: only do image-match when a hash was actually submitted.
+    # An empty string will never match a SHA-256 hash, so we check explicitly.
+    if submitted_cert_hash and submitted_cert_hash != stored_cert_hash:
         return {
             "valid":  False,
             "reason": "Certificate image does not match the issued certificate",
             "detail": "The submitted file has been modified or is not the original",
         }
 
-    result = _verify_full(stored_cert_hash, tx_id, ipfs_cid, hmac_key, hmac_value)
+    result = _verify_full(stored_cert_hash, tx_id, ipfs_cid, hmac_value)
     if not result.get("valid"):
         return result
 
