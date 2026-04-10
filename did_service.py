@@ -30,9 +30,18 @@ from db import get_db_connection, dict_cursor
 
 load_dotenv()
 
-DEMO_MODE = os.getenv("DEMO_MODE", "true").lower() == "true"
+DEMO_MODE_ENV = os.getenv("DEMO_MODE")
+
+if DEMO_MODE_ENV is None:
+    raise RuntimeError(
+        "DEMO_MODE is not set. Refusing to start with ambiguous security mode."
+    )
+
+DEMO_MODE = DEMO_MODE_ENV.lower() == "true"
 
 log = logging.getLogger(__name__)
+if DEMO_MODE:
+    log.warning("⚠️ DEMO_MODE is enabled — NOT safe for production")
 
 from signing_service import get_issuer_address, derive_institution_id, sign_transaction
 
@@ -124,8 +133,10 @@ def request_registration(institution_name: str, email: str, domain: str) -> dict
     finally:
         cur.close()
         conn.close()
+        
+    BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:5000")
 
-    verify_url = f"http://127.0.0.1:5000/verify-email?token={verify_token}"
+    verify_url = f"{BASE_URL}/verify-email?token={verify_token}"
     print("VERIFY URL:", verify_url)
     return {
         "registration_id": registration_id,

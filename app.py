@@ -18,7 +18,7 @@ FIXES:
     verify_with_identity.
   - /verify: response now includes hmac_valid field.
 """
-
+import hmac
 import hashlib
 import io
 import logging
@@ -68,7 +68,14 @@ limiter = Limiter(
     default_limits=["100 per day"],
 )
 
-ADMIN_KEY = os.getenv("ADMIN_KEY", "skillchain-admin-secret")
+import os
+
+ADMIN_KEY = os.getenv("ADMIN_KEY")
+
+if not ADMIN_KEY:
+    raise RuntimeError(
+        "ADMIN_KEY is not set. Refusing to start without admin authentication configured."
+    )
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 db_migrations.run_migrations()   # creates/alters all tables first
@@ -440,61 +447,77 @@ def verify_email():
 
 @app.route("/admin/pending", methods=["GET"])
 def admin_pending():
-    if request.headers.get("X-Admin-Key") != ADMIN_KEY:
+    if not hmac.compare_digest(
+        request.headers.get("X-Admin-Key", ""),
+        ADMIN_KEY
+    ):
         return jsonify({"error": "Unauthorized"}), 403
-    return jsonify(get_pending_registrations())
 
+    try:
+        return jsonify(get_pending_registrations())
+    except Exception:
+        log.exception("Admin pending failed")
+        return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/admin/approve/<registration_id>", methods=["POST"])
 def admin_approve(registration_id):
-    if request.headers.get("X-Admin-Key") != ADMIN_KEY:
+    if not hmac.compare_digest(
+        request.headers.get("X-Admin-Key", ""),
+        ADMIN_KEY
+    ):
         return jsonify({"error": "Unauthorized"}), 403
+
     try:
         result = approve_registration(registration_id)
         return jsonify(result)
 
-    except Exception as e:
-        import traceback
-        traceback.print_exc()  # helpful for debugging in logs
-        return jsonify({"error": str(e)}), 500
-
+    except Exception:
+        log.exception("Admin approve failed")
+        return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/admin/revoke-issuer/<institution_id>", methods=["POST"])
 def admin_revoke_issuer(institution_id):
-    if request.headers.get("X-Admin-Key") != ADMIN_KEY:
+    if not hmac.compare_digest(
+        request.headers.get("X-Admin-Key", ""),
+        ADMIN_KEY
+    ):
         return jsonify({"error": "Unauthorized"}), 403
 
-    data   = request.get_json(silent=True) or {}
-    reason = data.get("reason", "")
+    try:
+        data   = request.get_json(silent=True) or {}
+        reason = data.get("reason", "")
 
-    conn = get_db_connection()
-    cur  = conn.cursor()
-    cur.execute(
-        """
-        UPDATE did_registry
-        SET revoked        = 1,
-            revoked_at     = %s,
-            revoked_reason = %s
-        WHERE institution_id = %s
-        """,
-        (time.strftime("%Y-%m-%dT%H:%M:%SZ"), reason, institution_id),
-    )
-    conn.commit()
-    rows_affected = cur.rowcount
-    cur.close()
-    conn.close()
+        conn = get_db_connection()
+        cur  = conn.cursor()
+        cur.execute(
+            """
+            UPDATE did_registry
+            SET revoked        = 1,
+                revoked_at     = %s,
+                revoked_reason = %s
+            WHERE institution_id = %s
+            """,
+            (time.strftime("%Y-%m-%dT%H:%M:%SZ"), reason, institution_id),
+        )
+        conn.commit()
+        rows_affected = cur.rowcount
+        cur.close()
+        conn.close()
 
-    if rows_affected == 0:
-        return jsonify({"error": f"No institution found with id '{institution_id}'"}), 404
+        if rows_affected == 0:
+            return jsonify({"error": f"No institution found with id '{institution_id}'"}), 404
 
-    log.warning("Institution revoked: institution_id=%s reason=%r", institution_id, reason)
-    return jsonify({
-        "success":        True,
-        "institution_id": institution_id,
-        "revoked_at":     time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "reason":         reason,
-    })
+        log.warning("Institution revoked: institution_id=%s reason=%r", institution_id, reason)
+        return jsonify({
+            "success":        True,
+            "institution_id": institution_id,
+            "revoked_at":     time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "reason":         reason,
+        })
 
+    except Exception:
+        log.exception("Admin revoke failed")
+        return jsonify({"error": "Internal server error"}), 500
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
