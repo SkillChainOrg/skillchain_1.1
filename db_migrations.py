@@ -24,12 +24,14 @@ def _add_column_if_missing(cur, table: str, column: str, definition: str) -> Non
         cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         log.info("Migration: added column %s.%s", table, column)
 
-
 def run_migrations() -> None:
     conn = get_db_connection()
     cur = conn.cursor()
 
     try:
+        # Prevent race condition across multiple workers
+        cur.execute("SELECT pg_advisory_lock(123456789);")
+
         # ── did_registry ─────────────────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS did_registry (
@@ -53,7 +55,6 @@ def run_migrations() -> None:
             )
         """)
 
-        # Safe column additions
         for col, col_def in [
             ("institution_id",      "TEXT"),
             ("address",             "TEXT"),
@@ -74,7 +75,6 @@ def run_migrations() -> None:
         ]:
             _add_column_if_missing(cur, "did_registry", col, col_def)
 
-        # Backfill legacy rows
         cur.execute("""
             UPDATE did_registry
             SET institution_id = 'LEGACY_SYSTEM',
@@ -111,9 +111,7 @@ def run_migrations() -> None:
             )
         """)
 
-        # ── identity_anchors (Option 3 — DID-bound identity) ─
-        # Stores the permanent link between a DigiLocker user and their
-        # SkillChain identity DID.  No raw PII — only hashes.
+        # ── identity_anchors ─────────────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS identity_anchors (
                 id             SERIAL PRIMARY KEY,
@@ -123,11 +121,12 @@ def run_migrations() -> None:
                 bound_at       TEXT NOT NULL
             )
         """)
-        # Indexes for fast lookup in both directions
+
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_identity_anchors_digilocker_id
             ON identity_anchors (digilocker_id)
         """)
+
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_identity_anchors_identity_did
             ON identity_anchors (identity_did)
@@ -142,5 +141,11 @@ def run_migrations() -> None:
         raise
 
     finally:
+        # Always release lock
+        try:
+            cur.execute("SELECT pg_advisory_unlock(123456789);")
+        except Exception:
+            pass
+
         cur.close()
         conn.close()
