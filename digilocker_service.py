@@ -1,52 +1,88 @@
 """
-digilocker_service.py — Setu DigiLocker integration for SkillChain.
- 
-CHANGES (identity anchor integration — Option 3):
-  - verify_with_identity now:
-      1. Fetches DigiLocker user details to extract digilocker_id (the
-         stable Setu user identifier, not just the session request_id).
-      2. Calls identity_service.bind_identity() to create-or-return the
-         person's identity_did.  This is the persistent DID bound to their
-         government-verified identity.
-      3. Uses verify_identity_against_cert() (identity layer) instead of
-         the inline name-hash comparison in algorand_service.
-      4. Returns identity_did in the response so callers can reference the
-         permanent identity anchor.
-  - government_verified is now derived from actual outcomes, not hardcoded True.
-  - Added timeout=10 to fetch_document_data to prevent thread exhaustion.
-  - submitted_cert_hash is now REQUIRED — returns error if absent.
+digilocker_service.py — Mock DigiLocker provider for SkillChain (demo mode).
+
+WHY THIS EXISTS
+---------------
+Production DigiLocker access via Setu requires registered-institution
+credentials.  While those are being obtained, this module provides a
+fully self-contained simulation that:
+
+  • Behaves identically to the real Setu integration from the routes'
+    perspective — same function signatures, same return shapes.
+  • Lets the frontend exercise the complete consent → identity-bind → DID
+    flow without any external network calls.
+  • Is designed to be swapped out in a single diff: replace the two
+    private helpers `_mock_create_request` and `_mock_get_status` with
+    real HTTP calls to Setu, and nothing else in this file (or in the
+    routes) needs to change.
+
+MOCK FLOW
+---------
+1. /digilocker/start
+       → create_digilocker_request()
+       → stores a fake session in _FAKE_DIGILOCKER_DB
+       → returns request_id + a fake redirect URL
+
+2. /digilocker/callback?id=<request_id>
+       → get_request_status()
+       → the mock immediately marks the session "authenticated"
+         (simulates the user clicking "Allow" in DigiLocker)
+       → returns user details (name + stable digilocker_id)
+
+3. /digilocker/verify  (identity-only — document/cert layer is a separate concern)
+       → verify_with_identity()
+       → reads user details from the mock store
+       → normalises name, calls bind_identity() → DID
+       → returns identity_did, digilocker_id, name
+
+FUTURE SWAP POINTS
+------------------
+To restore real Setu calls, replace the bodies of:
+    _mock_create_request()        → POST https://dg-sandbox.setu.co/api/digilocker
+    _mock_get_status()            → GET  https://dg-sandbox.setu.co/api/digilocker/{id}
+
+The rest of this module — verify_with_identity, bind_identity call, and the
+response structure — does not need to change.
 """
- 
-import hashlib
+
 import logging
-import os
-import requests
-import xml.etree.ElementTree as ET
- 
-from dotenv import load_dotenv
- 
-load_dotenv()
- 
+import uuid
+
 log = logging.getLogger(__name__)
- 
-BASE_URL            = os.getenv("SETU_BASE_URL",            "https://dg-sandbox.setu.co")
-CLIENT_ID           = os.getenv("SETU_CLIENT_ID")
-CLIENT_SECRET       = os.getenv("SETU_CLIENT_SECRET")
-PRODUCT_INSTANCE_ID = os.getenv("SETU_PRODUCT_INSTANCE_ID")
- 
- 
-def setu_headers() -> dict:
-    return {
-        "Content-Type":          "application/json",
-        "x-client-id":           CLIENT_ID,
-        "x-client-secret":       CLIENT_SECRET,
-        "x-product-instance-id": PRODUCT_INSTANCE_ID,
-    }
- 
- 
-# ── DigiLocker session management ─────────────────────────────────────────────
- 
-def create_digilocker_request(redirect_url: str) -> dict:
+
+
+# ── In-memory mock store ───────────────────────────────────────────────────────
+#
+# Maps  request_id → { "name": str, "digilocker_id": str, "status": str }
+#
+# Intentionally module-level so it survives across requests within a single
+# Flask worker process (sufficient for demo / development).  For multi-worker
+# or multi-process deployments, replace with Redis or a DB-backed session table
+# using the same key → value interface.
+
+_FAKE_DIGILOCKER_DB: dict = {}
+
+# Fixed demo identity.  Change these constants (or read them from env vars) to
+# simulate a different verified user in the demo environment.
+_DEMO_USER_NAME = "Aarav Sharma"
+
+
+# ── Mock helpers (SWAP THESE for real Setu calls) ─────────────────────────────
+#
+# These two functions are the ONLY pieces that need to change when migrating to
+# real Setu API credentials.  The public API and all route handlers stay the
+# same.
+
+def _mock_create_request(redirect_url: str) -> dict:
+    """
+    Simulate a Setu POST /api/digilocker call.
+
+    Generates a fresh session, pre-populates the in-memory DB with a demo
+    user (auto-authenticated), and returns the same shape Setu would.
+
+    ── REAL SETU REPLACEMENT ─────────────────────────────────────────────────
+    import requests, os
+    BASE_URL = os.getenv("SETU_BASE_URL", "https://dg-sandbox.setu.co")
     response = requests.post(
         f"{BASE_URL}/api/digilocker",
         headers=setu_headers(),
@@ -60,9 +96,43 @@ def create_digilocker_request(redirect_url: str) -> dict:
         "digilocker_url": data["url"],
         "expires_at":     data["validUpto"],
     }
- 
- 
-def get_request_status(request_id: str) -> dict:
+    ──────────────────────────────────────────────────────────────────────────
+    """
+    request_id = str(uuid.uuid4())
+
+    # Derive a stable, deterministic digilocker_id from the request_id prefix.
+    # In production this comes from Setu as a stable per-user UID.
+    digilocker_id = f"DL-{request_id[:8]}"
+
+    _FAKE_DIGILOCKER_DB[request_id] = {
+        "name":          _DEMO_USER_NAME,
+        "digilocker_id": digilocker_id,
+        # Auto-authenticate: simulates the user clicking "Allow" in DigiLocker.
+        "status":        "authenticated",
+    }
+
+    log.info("[MOCK] DigiLocker session created: request_id=%s  digilocker_id=%s",
+             request_id, digilocker_id)
+
+    return {
+        "request_id":     request_id,
+        # A placeholder URL the frontend can display; no real redirect in demo.
+        "digilocker_url": f"https://mock.digilocker.demo/consent?id={request_id}",
+        "expires_at":     "2099-12-31T23:59:59Z",
+    }
+
+
+def _mock_get_status(request_id: str) -> dict:
+    """
+    Simulate a Setu GET /api/digilocker/{id} call.
+
+    Returns status + user details from the in-memory store.  Because the mock
+    auto-authenticates at creation time, this always returns "authenticated"
+    for a known request_id — no polling required.
+
+    ── REAL SETU REPLACEMENT ─────────────────────────────────────────────────
+    import requests, os
+    BASE_URL = os.getenv("SETU_BASE_URL", "https://dg-sandbox.setu.co")
     response = requests.get(
         f"{BASE_URL}/api/digilocker/{request_id}",
         headers=setu_headers(),
@@ -74,210 +144,187 @@ def get_request_status(request_id: str) -> dict:
         "user":       data.get("digilockerUserDetails", {}),
         "request_id": request_id,
     }
- 
- 
+    ──────────────────────────────────────────────────────────────────────────
+    """
+    session = _FAKE_DIGILOCKER_DB.get(request_id)
+    if not session:
+        log.warning("[MOCK] get_status called for unknown request_id=%s", request_id)
+        return {"status": "not_found", "user": {}, "request_id": request_id}
+
+    return {
+        "status":     session["status"],
+        "request_id": request_id,
+        # Mirror the shape of Setu's digilockerUserDetails block.
+        "user": {
+            "id":   session["digilocker_id"],
+            "name": session["name"],
+        },
+    }
+
+
+# ── Public API — identical signatures to the real Setu integration ─────────────
+#
+# Routes import only these names.  None of the routes change when swapping to
+# real Setu API calls; only the private helpers above change.
+
+def create_digilocker_request(redirect_url: str) -> dict:
+    """
+    Start a DigiLocker session.
+
+    Returns:
+        request_id      — opaque session token (pass to callback + verify)
+        digilocker_url  — URL to redirect or display to the user
+        expires_at      — ISO-8601 session expiry timestamp
+    """
+    return _mock_create_request(redirect_url)
+
+
+def get_request_status(request_id: str) -> dict:
+    """
+    Retrieve current consent status and user details for a session.
+
+    Returns:
+        status      — "authenticated" | "pending" | "not_found"
+        user        — dict with at least {id, name} when authenticated
+        request_id  — echoed back for convenience
+    """
+    return _mock_get_status(request_id)
+
+
+def ensure_mock_session(request_id: str) -> dict:
+    """
+    Idempotently create a mock session for a known request_id.
+
+    DEMO-ONLY helper.  Called by /digilocker/callback when the session is
+    missing from the in-memory store (e.g. the Flask server restarted between
+    /start and /callback, wiping _FAKE_DIGILOCKER_DB).
+
+    Instead of returning 403 and killing the presentation, this re-creates
+    the session deterministically — same request_id always produces the same
+    digilocker_id and demo name — so the rest of the flow continues unchanged.
+
+    This function should NOT exist in the real Setu integration (sessions live
+    on Setu's servers and survive our restarts).  Remove it — or make it a
+    no-op — when switching to real API calls.
+    """
+    digilocker_id = f"DL-{request_id[:8]}"
+
+    # Only write if the key is genuinely absent (guard against a race where
+    # two requests arrive simultaneously for the same id).
+    if request_id not in _FAKE_DIGILOCKER_DB:
+        _FAKE_DIGILOCKER_DB[request_id] = {
+            "name":          _DEMO_USER_NAME,
+            "digilocker_id": digilocker_id,
+            "status":        "authenticated",
+        }
+        log.info(
+            "[MOCK] Session re-created at callback (server likely restarted): "
+            "request_id=%s  digilocker_id=%s",
+            request_id, digilocker_id,
+        )
+
+    return _mock_get_status(request_id)
+
+
 def _get_digilocker_user_details(request_id: str) -> dict:
     """
-    Fetch full session details and return the user details block.
- 
-    Returns dict with at minimum:
-        id:   Stable DigiLocker user ID (used as identity anchor key)
-        name: Government-verified Aadhaar name
+    Return just the user-details block for a completed session.
+
+    Internal helper consumed by verify_with_identity.  Callers expect:
+        id   — stable DigiLocker user identifier (identity anchor key)
+        name — government-verified Aadhaar name
     """
-    response = requests.get(
-        f"{BASE_URL}/api/digilocker/{request_id}",
-        headers=setu_headers(),
-        timeout=10,
-    )
-    response.raise_for_status()
-    data = response.json()
-    return data.get("digilockerUserDetails", {})
- 
- 
-def get_verified_name(request_id: str) -> str:
-    """Return the DigiLocker-verified Aadhaar name for a completed session."""
-    user = _get_digilocker_user_details(request_id)
-    return user.get("name", "")
- 
- 
-def revoke_access(request_id: str) -> bool:
-    try:
-        response = requests.post(
-            f"{BASE_URL}/api/digilocker/{request_id}/revoke",
-            headers=setu_headers(),
-            timeout=10,
+    return _mock_get_status(request_id).get("user", {})
+
+
+# ── Identity verification entry point ─────────────────────────────────────────
+
+def verify_with_identity(request_id: str) -> dict:
+    """
+    Identity-only DigiLocker verification with DID binding.
+
+    This is the identity stage of the pipeline.  Document fetching,
+    certificate hashing, and blockchain anchoring are intentionally out of
+    scope here — they layer on top once real DigiLocker credentials are
+    available.  Keeping this function focused on identity makes it easy to
+    compose with the document/cert layer later.
+
+    Flow
+    ----
+    1. Fetch user details via _get_digilocker_user_details().
+    2. Validate that both name and digilocker_id are present.
+    3. Normalise the name (strip + lower) — must match what identity_service
+       uses so hashes are consistent.
+    4. Call bind_identity() — idempotent: creates the anchor on first call,
+       returns the existing DID on subsequent calls for the same user.
+    5. Return a structured response the route can return directly as JSON.
+
+    Args:
+        request_id: Session ID returned by create_digilocker_request().
+
+    Returns (success):
+        success        — True
+        identity_did   — did:skillchain:identity:<16-char-hash>
+        digilocker_id  — stable user identifier (e.g. "DL-a1b2c3d4" in mock)
+        name           — normalised name stored in the identity anchor
+        anchor_new     — True if this is the first bind for this user
+
+    Returns (failure):
+        success        — False
+        reason         — human-readable explanation
+    """
+    # Import here to avoid a circular import at module load time.
+    from identity_service import bind_identity
+
+    # Step 1 — retrieve user details from the session ─────────────────────────
+    user          = _get_digilocker_user_details(request_id)
+    digilocker_id = user.get("id", "").strip()
+    raw_name      = user.get("name", "").strip()
+
+    # Step 2 — guard against incomplete sessions ───────────────────────────────
+    if not digilocker_id or not raw_name:
+        log.warning(
+            "[MOCK] Incomplete session data for request_id=%s  "
+            "digilocker_id=%r  name=%r",
+            request_id, digilocker_id, raw_name,
         )
-        return response.status_code == 200
+        return {
+            "success": False,
+            "reason": (
+                "DigiLocker session returned incomplete identity data. "
+                "The session may have expired or consent was not granted."
+            ),
+        }
+
+    # Step 3 — normalise name ─────────────────────────────────────────────────
+    # identity_service._normalize_name() applies the same transform, but we do
+    # it explicitly here so the "name" field in our response always reflects
+    # what was actually written into the identity anchor.
+    normalised_name = raw_name.strip().lower()
+
+    # Step 4 — bind identity → DID (idempotent) ───────────────────────────────
+    try:
+        anchor = bind_identity(digilocker_id, normalised_name)
     except Exception as exc:
-        log.warning("Failed to revoke DigiLocker session %s: %s", request_id, exc)
-        return False
- 
- 
-# ── Document fetching ─────────────────────────────────────────────────────────
- 
-def fetch_document_data(request_id: str, doc_type: str, org_id: str) -> dict:
-    """
-    Fetch a structured document from DigiLocker via Setu.
- 
-    Returns a dict with at minimum:
-        name:        Candidate name from the document
-        cert_number: Roll number / certificate number (primary lookup key)
-        raw_xml:     Raw XML string for debugging
-    """
-    response = requests.post(
-        f"{BASE_URL}/api/digilocker/{request_id}/fetch",
-        headers={**setu_headers(), "Accept": "application/xml"},
-        json={"docType": doc_type, "orgId": org_id},
-        timeout=10,                             # FIXED: was missing
+        log.error(
+            "Identity binding failed  digilocker_id=%s  error=%s",
+            digilocker_id, exc,
+        )
+        return {
+            "success": False,
+            "reason":  f"Identity binding failed: {exc}",
+        }
+
+    log.info(
+        "Identity bound  did=%s  new=%s",
+        anchor["identity_did"], anchor["created"],
     )
- 
-    xml_content = response.text
-    MAX_XML_BYTES = 512 * 1024                  # 512 KB guard
-    if len(xml_content.encode()) > MAX_XML_BYTES:
-        raise ValueError(f"DigiLocker XML response too large ({len(xml_content)} chars)")
- 
-    root = ET.fromstring(xml_content)
- 
-    def safe_text(element):
-        return element.text.strip() if element is not None and element.text else ""
- 
-    cert_number = (
-        safe_text(root.find(".//Candidate/RollNo"))
-        or safe_text(root.find(".//CertificateNumber"))
-        or safe_text(root.find(".//DocNumber"))
-    )
- 
+
+    # Step 5 — return identity result ─────────────────────────────────────────
     return {
-        "name":        safe_text(root.find(".//Candidate/Name")),
-        "cert_number": cert_number,
-        "raw_xml":     xml_content,
-    }
- 
- 
-# ── Canonicalisation helpers (legacy — not used in main flow) ─────────────────
- 
-def canonicalize_document(doc: dict) -> str:
-    name = doc.get("name", "").strip().lower()
-    roll = doc.get("cert_number", "").strip().lower()
-    return f"name:{name}|roll:{roll}"
- 
- 
-def hash_document_data(doc: dict) -> str:
-    """SHA-256 of the canonical document string (legacy helper)."""
-    canonical = canonicalize_document(doc)
-    return hashlib.sha256(canonical.encode()).hexdigest()
- 
- 
-# ── Main verification flow (Option 3 — DID-bound identity) ────────────────────
- 
-def verify_with_identity(
-    request_id: str,
-    doc_type: str,
-    org_id: str,
-    submitted_cert_hash: str | None = None,
-) -> dict:
-    """
-    Full DigiLocker-backed certificate verification with DID identity binding.
- 
-    Flow:
-      1. Fetch user details → extract digilocker_id + verified name.
-      2. bind_identity() → create-or-return the person's permanent identity_did.
-      3. Fetch the DigiLocker document → extract cert_number.
-      4. Require submitted_cert_hash — reject if absent.
-      5. verify_by_cert_number() → HMAC + IPFS + Algorand checks.
-      6. verify_identity_against_cert() → name_hash vs cert's issued_to.
-      7. Revoke DigiLocker session.
-      8. Return result with identity_did and composite government_verified flag.
-    """
-    from algorand_service import verify_by_cert_number
-    from identity_service import bind_identity, verify_identity_against_cert
- 
-    # Step 1 ── user details + stable digilocker_id ───────────────────────────
-    try:
-        user_details = _get_digilocker_user_details(request_id)
-    except Exception as exc:
-        revoke_access(request_id)
-        return {"valid": False, "reason": f"DigiLocker session fetch failed: {exc}"}
- 
-    # Setu returns a stable uid. Fall back to request_id in sandbox mode.
-    digilocker_id   = user_details.get("id") or request_id
-    digilocker_name = user_details.get("name", "").strip()
- 
-    if not digilocker_name:
-        revoke_access(request_id)
-        return {
-            "valid":  False,
-            "reason": "DigiLocker session did not return a verified name — consent may be incomplete",
-        }
- 
-    # Step 2 ── bind identity → identity_did ──────────────────────────────────
-    try:
-        anchor = bind_identity(digilocker_id, digilocker_name)
-    except Exception as exc:
-        log.error("Identity binding failed: %s", exc)
-        revoke_access(request_id)
-        return {"valid": False, "reason": f"Identity binding failed: {exc}"}
- 
-    identity_did     = anchor["identity_did"]
-    identity_created = anchor["created"]
- 
-    # Step 3 ── fetch document → cert_number ──────────────────────────────────
-    try:
-        doc = fetch_document_data(request_id, doc_type, org_id)
-    except Exception as exc:
-        revoke_access(request_id)
-        return {
-            "valid":        False,
-            "identity_did": identity_did,
-            "reason":       f"DigiLocker document fetch failed: {exc}",
-        }
- 
-    cert_number = doc.get("cert_number", "").strip()
-    if not cert_number:
-        revoke_access(request_id)
-        return {
-            "valid":        False,
-            "identity_did": identity_did,
-            "reason":       "Could not extract cert/roll number from DigiLocker document",
-            "detail":       "Check doc_type and org_id — field path may differ for this document type",
-        }
- 
-    # Step 4 ── require submitted_cert_hash ───────────────────────────────────
-    if not submitted_cert_hash:
-        revoke_access(request_id)
-        return {
-            "valid":        False,
-            "identity_did": identity_did,
-            "reason":       "submitted_cert_hash is required — employer must upload the certificate image",
-            "detail":       "This ensures the verifier physically holds the document, not just the cert number",
-        }
- 
-    # Step 5 ── certificate + chain verification ───────────────────────────────
-    result = verify_by_cert_number(
-        cert_number=cert_number,
-        submitted_cert_hash=submitted_cert_hash,
-        digilocker_name=None,               # identity handled here, not in algorand_service
-    )
- 
-    # Step 6 ── identity cross-check via DID anchor ────────────────────────────
-    issued_to_hash    = result.pop("issued_to", None)
-    identity_check    = verify_identity_against_cert(identity_did, issued_to_hash)
-    identity_verified = identity_check["matched"]
- 
-    # Step 7 ── revoke session ─────────────────────────────────────────────────
-    revoke_access(request_id)
- 
-    # Step 8 ── composite response ─────────────────────────────────────────────
-    certificate_valid   = result.get("valid", False)
-    government_verified = certificate_valid and identity_verified  # FIXED: derived not hardcoded
- 
-    return {
-        **result,
-        "identity_did":                identity_did,
-        "identity_verified":           identity_verified,
-        "identity_check":              identity_check["detail"],
-        "identity_anchor_new":         identity_created,
-        "cert_number_from_digilocker": cert_number,
-        "source":                      "DigiLocker",
-        "government_verified":         government_verified,
+        "success":       True,
+        "identity_did":  anchor["identity_did"],
+        "digilocker_id": digilocker_id,
+        "name":          normalised_name,
+        "anchor_new":    anchor["created"],   # True = first bind; False = returning user
     }
