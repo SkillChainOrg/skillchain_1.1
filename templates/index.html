@@ -186,6 +186,8 @@
       nav { padding: 0 12px; gap: 4px; }
       .nav-link { padding: 6px 8px; font-size: 12px; }
       .hero h1 { font-size: 24px; }
+      /* feature grid collapses to single column on small screens */
+      #page-home .feature-grid-2col { grid-template-columns: 1fr !important; }
     }
   </style>
 </head>
@@ -234,28 +236,85 @@
   <button class="nav-link" id="nav-admin" onclick="goto('admin')">Admin</button>
 </nav>
 
-<!-- HOME -->
+<!-- HOME — [Upgrade #5] Improved landing page -->
 <div class="page active" id="page-home">
+
+  <!-- HERO -->
   <div class="hero">
-    <h1>Trust, Cryptographically.</h1>
-    <p>SkillChain anchors certificate hashes to the Algorand blockchain. Verify any academic or professional credential in under 10 seconds — no phone calls, no waiting, no fraud.</p>
-    <div class="hero-btns">
-      <button class="btn-primary" onclick="goto('verify')">Verify a certificate</button>
-      <button class="btn-outline" onclick="goto('register')">Register your institution</button>
+    <div style="display:inline-flex;align-items:center;gap:6px;background:#e8eaf6;color:#1a237e;font-size:12px;font-weight:600;padding:5px 12px;border-radius:99px;margin-bottom:20px">
+      &#9656; Live on Algorand Testnet
     </div>
-    <div class="stats">
-      <div class="stat"><div class="stat-num">&lt;10s</div><div class="stat-label">Verification time</div></div>
-      <div class="stat"><div class="stat-num">~₹0.03</div><div class="stat-label">Cost per anchor</div></div>
-      <div class="stat"><div class="stat-num">6,000+</div><div class="stat-label">TPS on Algorand</div></div>
+    <h1>Verify Credentials<br>Without Trust</h1>
+    <p>SkillChain anchors certificate hashes to the Algorand blockchain and stores documents on IPFS. Anyone can verify any credential in under 10 seconds — no phone calls, no waiting, no fraud.</p>
+    <div class="hero-btns">
+      <button class="btn-primary" onclick="goto('register')">&#127979; Register Institution</button>
+      <button class="btn-outline" onclick="goto('verify')">&#128269; Verify Certificate</button>
     </div>
   </div>
+
+  <!-- FEATURE GRID — [Upgrade #5] -->
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:32px">
+    <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:18px">
+      <div style="font-size:24px;margin-bottom:8px">&#9972;</div>
+      <div style="font-size:14px;font-weight:600;margin-bottom:4px">Blockchain Anchoring</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.6">SHA-256 certificate hashes anchored permanently to Algorand. Tamper-proof, timestamped, immutable.</div>
+    </div>
+    <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:18px">
+      <div style="font-size:24px;margin-bottom:8px">&#128190;</div>
+      <div style="font-size:14px;font-weight:600;margin-bottom:4px">IPFS Storage</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.6">Credential files stored on the InterPlanetary File System — decentralised, content-addressed, permanent.</div>
+    </div>
+    <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:18px">
+      <div style="font-size:24px;margin-bottom:8px">&#129381;</div>
+      <div style="font-size:14px;font-weight:600;margin-bottom:4px">DID Identity</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.6">Every institution gets a W3C-compliant Decentralised Identifier — a cryptographic identity no one can revoke.</div>
+    </div>
+    <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:18px">
+      <div style="font-size:24px;margin-bottom:8px">&#128272;</div>
+      <div style="font-size:14px;font-weight:600;margin-bottom:4px">Vault-secured Keys</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.6">Private keys live in an encrypted vault. They are never exposed — not in logs, not in responses, not in code.</div>
+    </div>
+  </div>
+
+  <!-- STATS -->
+  <div class="stats" style="margin-bottom:32px">
+    <div class="stat"><div class="stat-num">&lt;10s</div><div class="stat-label">Verification time</div></div>
+    <div class="stat"><div class="stat-num">~&#8377;0.03</div><div class="stat-label">Cost per anchor</div></div>
+    <div class="stat"><div class="stat-num">6,000+</div><div class="stat-label">TPS on Algorand</div></div>
+  </div>
+
+  <!-- HOW IT WORKS -->
   <div class="how-it-works">
     <div class="how-title">How it works</div>
-    <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Institution registers</strong> — gets a DID anchored on Algorand and an API key to issue credentials.</div></div>
-    <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Certificate is issued</strong> — SHA-256 hash + name hash anchored to Algorand in under 4 seconds. QR code embedded.</div></div>
-    <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Anyone verifies</strong> — upload the certificate or scan the QR. Two cryptographic checks: integrity + issuer provenance.</div></div>
-    <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Identity confirmed</strong> — optionally verify via DigiLocker. Aadhaar name matched against the anchored name hash.</div></div>
+    <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Institution registers</strong> — gets a DID anchored on Algorand and a vault-secured API key.</div></div>
+    <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Certificate is issued</strong> — SHA-256 hash stored on IPFS and anchored to Algorand in under 4 seconds.</div></div>
+    <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Anyone verifies</strong> — upload the certificate. Two cryptographic checks: integrity + issuer provenance.</div></div>
+    <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Identity confirmed</strong> — optionally verify via DigiLocker. Aadhaar name matched against the on-chain hash.</div></div>
   </div>
+
+  <!-- TRUST ARCHITECTURE CALLOUT -->
+  <div style="background:#f0f4ff;border:1px solid #c7d7f9;border-radius:12px;padding:18px;margin-top:32px">
+    <div style="font-size:13px;font-weight:600;color:#1e3a8a;margin-bottom:10px">&#128272; How trust is enforced</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div style="font-size:12px;color:#1e3a8a;display:flex;gap:10px;align-items:flex-start">
+        <span style="min-width:18px">&#128190;</span>
+        <span><strong>Storage</strong> — certificates live on IPFS, content-addressed by their hash. A changed file has a different address.</span>
+      </div>
+      <div style="font-size:12px;color:#1e3a8a;display:flex;gap:10px;align-items:flex-start">
+        <span style="min-width:18px">&#9972;</span>
+        <span><strong>Proof</strong> — the SHA-256 hash is anchored on Algorand. The blockchain is the source of truth for authenticity.</span>
+      </div>
+      <div style="font-size:12px;color:#1e3a8a;display:flex;gap:10px;align-items:flex-start">
+        <span style="min-width:18px">&#129381;</span>
+        <span><strong>Identity</strong> — each institution has a DID. Certificates are cryptographically signed by the issuer's key.</span>
+      </div>
+      <div style="font-size:12px;color:#1e3a8a;display:flex;gap:10px;align-items:flex-start">
+        <span style="min-width:18px">&#128272;</span>
+        <span><strong>Security</strong> — private keys are stored in an encrypted vault. They never appear in API responses or logs.</span>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <!-- ISSUE -->
@@ -480,16 +539,33 @@ function showIssueResult(data) {
     el.className = 'result success';
     const txId   = data.tx_id || '';
     const expUrl = data.explorer_url || `https://testnet.explorer.perawallet.app/tx/${txId}`;
-    // Fix #12: human-friendly labels. Fix #15: trust badges. Fix #14: clickable tx
+    // [Upgrade #1] Build IPFS link if CID is present
+    const ipfsCid  = data.ipfs_cid || '';
+    const ipfsUrl  = ipfsCid ? `https://ipfs.io/ipfs/${ipfsCid}` : '';
+    // [Upgrade #1] Issuance success — clickable IPFS + Algorand links
+    const ipfsRow = ipfsUrl
+      ? `<div class="check-row">
+           <span class="check-icon">📦</span>
+           <span class="check-label">Certificate storage</span>
+           <span class="check-value">
+             <a class="tx-link" href="${ipfsUrl}" target="_blank" rel="noopener">
+               View Certificate on IPFS &#8599;
+             </a>
+           </span>
+         </div>`
+      : `<div class="check-row"><span class="check-icon">📦</span><span class="check-label">IPFS</span><span class="check-value">—</span></div>`;
     el.innerHTML = `
       <div style="font-size:15px;font-weight:600;color:var(--green);margin-bottom:12px">&#9989; Certificate anchored successfully</div>
       <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Issued by</span><span class="check-value">${data.issued_by || '—'}</span></div>
       <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Integrity proof</span><span class="check-value">${(data.cert_hash||'').slice(0,14)}...</span></div>
       <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Identity hash</span><span class="check-value">Anchored on-chain</span></div>
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Blockchain proof</span>
+      ${ipfsRow}
+      <div class="check-row">
+        <span class="check-icon">⛓</span>
+        <span class="check-label">Blockchain proof</span>
         <span class="check-value">
           <a class="tx-link" href="${expUrl}" target="_blank" rel="noopener">
-            View on explorer &#8599;
+            View on Blockchain Explorer &#8599;
           </a>
         </span>
       </div>
@@ -755,24 +831,35 @@ async function approve(id, key, btn) {
     const data = await res.json();
 
     if (data.success) {
-      const card    = btn.closest('.pending-card');
-      const expUrl  = data.explorer_url || `https://testnet.explorer.perawallet.app/tx/${data.tx_id||''}`;
-      // Fix #18: clear success state with API key prominent
+      const card        = btn.closest('.pending-card');
+      // [Upgrade #2] DID tx link removed — registration stays clean
+      // [Upgrade #3] Wallet address displayed (public only)
+      const walletAddr  = data.address || '';
+      const addrDisplay = walletAddr.length > 16
+        ? walletAddr.slice(0,8) + '...' + walletAddr.slice(-6)
+        : (walletAddr || '\u2014');
       card.innerHTML = `
         <div class="approval-success">
           <div class="approval-icon">&#127881;</div>
           <div class="approval-title">Institution Approved</div>
-          <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Institution</span><span class="check-value">${data.institution||id}</span></div>
-          <div class="check-row"><span class="check-icon">✓</span><span class="check-label">DID issued</span><span class="check-value" style="font-family:monospace;font-size:10px">${(data.did||'').slice(0,30)}...</span></div>
-          <div style="font-size:12px;color:var(--green);font-weight:600;margin:12px 0 4px">&#128273; API Key — share securely with the institution</div>
-          <div class="apikey-display" onclick="copyApiKey('${data.api_key||''}')">${data.api_key||'—'}</div>
-          <div style="margin-top:10px">
-            <a class="tx-link-full" href="${expUrl}" target="_blank" rel="noopener">View DID transaction on Algorand explorer &#8599;</a>
+          <div class="check-row"><span class="check-icon">\u2713</span><span class="check-label">Institution</span><span class="check-value">${data.institution||id}</span></div>
+          <div class="check-row"><span class="check-icon">\u2713</span><span class="check-label">DID issued</span><span class="check-value" style="font-family:monospace;font-size:10px">${(data.did||'').slice(0,30)}...</span></div>
+          <div class="check-row">
+            <span class="check-icon">&#127968;</span>
+            <span class="check-label">On-chain Identity Address</span>
+            <span class="check-value" style="font-family:monospace;font-size:11px" title="${walletAddr}">${addrDisplay}</span>
+          </div>
+          <div style="font-size:12px;color:var(--green);font-weight:600;margin:12px 0 4px">&#128273; API Key \u2014 share securely with the institution</div>
+          <div class="apikey-display" onclick="copyApiKey('${data.api_key||''}')">
+            ${data.api_key||'\u2014'}
           </div>
           <div class="trust-layer" style="justify-content:flex-start;margin-top:12px">
             <span class="trust-badge chain">&#9972; DID on-chain</span>
-            <span class="trust-badge sig">&#128274; Key issued</span>
+            <span class="trust-badge sig" style="background:#e8eaf6;color:#1a237e">&#128272; Vault Secured</span>
             <span class="trust-badge did">&#129381; Ready to issue</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6">
+            &#128272; Private keys are securely stored in Vault and never exposed.
           </div>
         </div>
       `;

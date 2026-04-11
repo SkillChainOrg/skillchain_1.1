@@ -545,6 +545,232 @@ def admin_revoke_issuer(institution_id):
     })
 
 
+# ── DID resolution endpoints ──────────────────────────────────────────────────
+
+@app.route("/did/<path:did>", methods=["GET"])
+def resolve_did_endpoint(did: str):
+    """
+    GET /did/<did>
+    Returns a W3C DID Document JSON for the given DID.
+    Validates format and returns 404 if not found.
+
+    Added for demo transparency — lets anyone inspect an institution's DID.
+    """
+    import re
+    # Basic DID format validation: must start with "did:"
+    if not re.match(r"^did:[a-z]+:[a-zA-Z0-9._\-:]+$", did):
+        return jsonify({"error": "Invalid DID format"}), 400
+
+    try:
+        from w3c_did_service import resolve_did
+        document = resolve_did(did)
+    except Exception as exc:
+        log.error("DID resolution failed: %s", exc)
+        return jsonify({"error": "DID resolution error"}), 500
+
+    if not document:
+        return jsonify({"error": "DID not found"}), 404
+
+    return jsonify(document), 200, {"Content-Type": "application/json"}
+
+
+@app.route("/did/view/<path:did>", methods=["GET"])
+def view_did_endpoint(did: str):
+    """
+    GET /did/view/<did>
+    Human-readable identity page for a DID.
+    Shows institution name, address, and links to the raw DID document.
+    """
+    import re
+    if not re.match(r"^did:[a-z]+:[a-zA-Z0-9._\-:]+$", did):
+        return "Invalid DID format", 400
+
+    try:
+        from w3c_did_service import resolve_did
+        document = resolve_did(did)
+    except Exception as exc:
+        log.error("DID view resolution failed: %s", exc)
+        document = None
+
+    if not document:
+        return render_template_string(
+            "<h2>DID Not Found</h2><p>No identity document found for: <code>{{ did }}</code></p>",
+            did=did
+        ), 404
+
+    # Extract key fields from the DID document
+    subject = document.get("id", did)
+    service  = document.get("service", [{}])
+    name     = ""
+    address  = ""
+    for svc in service:
+        if svc.get("type") == "SkillChainIssuer":
+            ep = svc.get("serviceEndpoint", {})
+            if isinstance(ep, dict):
+                name    = ep.get("institutionName", "")
+                address = ep.get("algorandAddress", "")
+
+    from flask import render_template_string
+    return render_template_string("""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Identity: {{ subject }}</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #f5f5f5; margin: 0; padding: 40px 20px; }
+    .card { max-width: 580px; margin: 0 auto; background: white; border-radius: 12px;
+            padding: 28px; border: 1px solid #e5e5e5; }
+    h2 { margin: 0 0 4px; font-size: 20px; }
+    .sub { font-size: 13px; color: #666; margin-bottom: 20px; }
+    .row { display: flex; justify-content: space-between; align-items: flex-start;
+           padding: 10px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px; gap: 16px; }
+    .row:last-child { border-bottom: none; }
+    .label { color: #888; min-width: 120px; }
+    .value { font-family: monospace; word-break: break-all; color: #1a1a1a; }
+    .vault-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px;
+                   font-weight: 600; background: #e8eaf6; color: #1a237e; padding: 4px 10px;
+                   border-radius: 99px; margin-top: 16px; }
+    .raw-btn { display: inline-block; margin-top: 16px; padding: 9px 18px; font-size: 13px;
+               font-weight: 500; background: #1a1a1a; color: white; border-radius: 8px;
+               text-decoration: none; }
+    .raw-btn:hover { opacity: .85; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h2>🏛 {{ name or 'Institution Identity' }}</h2>
+  <div class="sub">Decentralised Identity Document — W3C DID Standard</div>
+  {% if address %}
+  <div class="row">
+    <span class="label">On-chain Address</span>
+    <span class="value">{{ address }}</span>
+  </div>
+  {% endif %}
+  <div class="row">
+    <span class="label">DID</span>
+    <span class="value" style="font-size:11px">{{ subject }}</span>
+  </div>
+  <div class="vault-badge">🔐 Vault Secured — Private keys never exposed</div>
+  <br>
+  <a class="raw-btn" href="/did/{{ did }}">View Raw DID Document</a>
+</div>
+</body></html>""",
+        subject=subject, name=name, address=address, did=did
+    )
+
+
+# ── Institution dashboard ──────────────────────────────────────────────────────
+
+@app.route("/institution/<path:did>", methods=["GET"])
+def institution_dashboard(did: str):
+    """
+    GET /institution/<did>
+    Institution profile page: name, DID, wallet address, vault badge,
+    and a placeholder table for certificates issued.
+    Structure-only — data fetching will be wired in a future milestone.
+    """
+    # Look up institution from DB by DID
+    conn = get_db_connection()
+    cur  = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT institution, institution_address, domain FROM did_registry WHERE address = %s OR did = %s LIMIT 1",
+            (did, did)
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+    if not row:
+        # Graceful fallback for demo purposes
+        inst_name    = "Unknown Institution"
+        inst_address = did
+        domain       = ""
+    else:
+        inst_name    = row[0] if isinstance(row, (list, tuple)) else row["institution"]
+        inst_address = row[1] if isinstance(row, (list, tuple)) else row["institution_address"]
+        domain       = row[2] if isinstance(row, (list, tuple)) else row["domain"]
+
+    # Abbreviate wallet address for display
+    addr_display = (inst_address[:8] + "..." + inst_address[-6:]) if inst_address and len(inst_address) > 16 else (inst_address or "—")
+
+    from flask import render_template_string
+    return render_template_string("""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ name }} — SkillChain</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #f5f5f5; margin: 0; padding: 40px 20px; }
+    .wrap { max-width: 700px; margin: 0 auto; }
+    .profile-card { background: white; border-radius: 12px; padding: 24px; border: 1px solid #e5e5e5; margin-bottom: 16px; }
+    h2 { margin: 0 0 4px; font-size: 22px; }
+    .domain { font-size: 13px; color: #666; margin-bottom: 20px; }
+    .row { display: flex; gap: 16px; align-items: flex-start; padding: 9px 0;
+           border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+    .row:last-child { border-bottom: none; }
+    .lbl { color: #888; min-width: 160px; }
+    .val { font-family: monospace; word-break: break-all; }
+    .vault-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+                   font-weight: 600; background: #e8eaf6; color: #1a237e; padding: 5px 12px;
+                   border-radius: 99px; margin-top: 14px; cursor: default; }
+    .vault-badge[title]:hover::after { content: attr(title); position: absolute; background: #333;
+      color: white; font-size: 11px; padding: 4px 8px; border-radius: 6px; margin-left: 8px; white-space: nowrap; }
+    .section-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 8px 12px; background: #f9f9f9; border-bottom: 2px solid #e5e5e5; color: #555; font-size: 12px; }
+    td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; color: #888; font-style: italic; }
+    tr:last-child td { border-bottom: none; }
+    .placeholder { text-align: center; padding: 32px 16px; color: #bbb; font-size: 13px; }
+    .back { display: inline-block; margin-bottom: 16px; font-size: 13px; color: #2563eb; text-decoration: none; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="/">← Back to SkillChain</a>
+  <div class="profile-card">
+    <h2>🏛 {{ name }}</h2>
+    <div class="domain">{{ domain }}</div>
+
+    <div class="row"><span class="lbl">DID</span><span class="val" style="font-size:11px">{{ did }}</span></div>
+    <div class="row">
+      <span class="lbl">On-chain Identity Address</span>
+      <span class="val">{{ addr_display }}</span>
+    </div>
+
+    <div class="vault-badge" title="Private keys are securely stored and never exposed">
+      🔐 Vault Secured
+    </div>
+  </div>
+
+  <div class="profile-card">
+    <div class="section-title">Certificates Issued</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Certificate ID</th>
+          <th>Issued To</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td colspan="3">
+            <div class="placeholder">
+              📋 Certificate listing coming soon — data fetching will be enabled in the next milestone.
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+</body></html>""",
+        name=inst_name, did=did, addr_display=addr_display, domain=domain
+    )
+
+
 # ── Health ────────────────────────────────────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
