@@ -45,6 +45,14 @@ if DEMO_MODE:
 
 from signing_service import get_issuer_address, derive_institution_id, sign_transaction
 
+# W3C DID Document generation (non-breaking addition)
+try:
+    from w3c_did_service import generate_and_store_did_document
+    _W3C_DID_ENABLED = True
+except ImportError:
+    _W3C_DID_ENABLED = False
+    log.warning("w3c_did_service not found — DID Documents will not be pre-generated.")
+
 ALGOD_URL     = os.getenv("ALGOD_URL",    "https://testnet-api.algonode.cloud")
 INDEXER_URL   = os.getenv("INDEXER_URL",  "https://testnet-idx.algonode.cloud")
 ALGOD_TOKEN   = ""
@@ -424,6 +432,21 @@ def register_did(
     finally:
         cur.close()
         conn.close()
+
+    # ── Generate and cache W3C DID Document ────────────────────────────────
+    # Non-fatal: if w3c_did_service is unavailable, registration still succeeds.
+    if _W3C_DID_ENABLED:
+        try:
+            generate_and_store_did_document(
+                did=did,
+                institution_name=institution_name,
+                domain=domain or "",
+                algorand_address=institution_address,
+                registered_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            )
+            log.info("W3C DID Document generated for: %s", did)
+        except Exception as exc:
+            log.warning("W3C DID Document generation failed (non-fatal): %s", exc)
 
     return {
         "did":            did,
