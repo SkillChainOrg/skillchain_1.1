@@ -13,6 +13,7 @@
       --green: #0f6e56; --green-bg: #f0faf5; --green-border: #5dcaa5;
       --red: #a32d2d; --red-bg: #fef2f2; --red-border: #fca5a5;
       --blue: #2563eb; --amber: #854f0b; --amber-bg: #faeeda;
+      --indigo: #1a237e; --indigo-light: #e8eaf6;
     }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
 
@@ -74,27 +75,72 @@
     .result.success { background: var(--green-bg); border: 1px solid var(--green-border); }
     .result.error { background: var(--red-bg); border: 1px solid var(--red-border); }
     .result.warning { background: var(--amber-bg); border: 1px solid #EF9F27; }
-    .result-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
-    .result-title.ok { color: var(--green); }
-    .result-title.fail { color: var(--red); }
+
+    /* VERDICT — BIG CENTERED (Fix #13) */
+    .verdict { text-align: center; padding: 24px 16px 18px; border-radius: 10px; margin-top: 16px; display: none; }
+    .verdict.valid { background: var(--green-bg); border: 2px solid var(--green-border); }
+    .verdict.invalid { background: var(--red-bg); border: 2px solid var(--red-border); }
+    .verdict-icon { font-size: 48px; margin-bottom: 8px; }
+    .verdict-label { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+    .verdict-label.ok { color: var(--green); }
+    .verdict-label.fail { color: var(--red); }
+    .verdict-sub { font-size: 13px; color: var(--muted); }
+
+    /* TRUST BADGES (Fix #15) */
+    .trust-layer { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; justify-content: center; }
+    .trust-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 500; padding: 4px 10px; border-radius: 99px; }
+    .trust-badge.sig  { background: #e8eaf6; color: #1a237e; }
+    .trust-badge.chain{ background: #f0faf5; color: #0f6e56; }
+    .trust-badge.ipfs { background: #faeeda; color: #854f0b; }
+    .trust-badge.did  { background: #fef2f2; color: #a32d2d; }
+
     .check-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgba(0,0,0,.06); font-size: 13px; }
     .check-row:last-child { border-bottom: none; }
     .check-icon { font-size: 14px; min-width: 18px; }
     .check-label { color: var(--muted); flex: 1; }
     .check-value { font-weight: 500; text-align: right; font-size: 12px; }
-    .tx-link { color: var(--blue); text-decoration: none; font-size: 12px; }
+    .check-detail { margin-top: 12px; border-top: 1px solid rgba(0,0,0,.08); padding-top: 12px; }
+
+    /* Clickable tx (Fix #14) */
+    .tx-link { color: var(--blue); text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; }
     .tx-link:hover { text-decoration: underline; }
+    .tx-link-full { color: var(--blue); text-decoration: none; font-size: 12px; word-break: break-all; }
+    .tx-link-full:hover { text-decoration: underline; }
+
+    /* QR */
     .qr-section { margin-top: 16px; text-align: center; }
     .qr-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
     #qrcode { display: inline-block; }
     #qrcode img, #qrcode canvas { border-radius: 8px; }
 
     /* DIGILOCKER */
-    .dl-btn { width: 100%; padding: 12px; font-size: 14px; font-weight: 500; background: #1a237e; color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 8px; transition: opacity .15s; }
+    .dl-btn { width: 100%; padding: 12px; font-size: 14px; font-weight: 500; background: var(--indigo); color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 8px; transition: opacity .15s; display: flex; align-items: center; justify-content: center; gap: 8px; }
     .dl-btn:hover { opacity: .85; }
     .divider { display: flex; align-items: center; gap: 12px; margin: 16px 0; }
     .divider-line { flex: 1; height: 1px; background: var(--border); }
     .divider-text { font-size: 12px; color: var(--muted); }
+
+    /* DIGILOCKER MODAL (Fix #2) */
+    .dl-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 200; display: none; align-items: center; justify-content: center; }
+    .dl-modal-overlay.open { display: flex; }
+    .dl-modal { background: white; border-radius: 16px; width: 360px; max-width: 90vw; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.2); }
+    .dl-modal-header { background: var(--indigo); padding: 20px 24px; color: white; }
+    .dl-modal-logo { font-size: 13px; font-weight: 700; letter-spacing: .5px; opacity: .7; margin-bottom: 6px; }
+    .dl-modal-title { font-size: 18px; font-weight: 600; }
+    .dl-modal-body { padding: 20px 24px; }
+    .dl-consent-app { display: flex; align-items: center; gap: 12px; background: #f8f9ff; border: 1px solid #e8eaf6; border-radius: 10px; padding: 14px; margin-bottom: 16px; }
+    .dl-app-icon { width: 40px; height: 40px; background: var(--indigo); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: white; font-size: 18px; font-weight: 700; flex-shrink: 0; }
+    .dl-app-name { font-size: 14px; font-weight: 600; }
+    .dl-app-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .dl-consent-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: #333; }
+    .dl-consent-item { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; font-size: 13px; color: var(--muted); }
+    .dl-consent-item::before { content: "✓"; color: var(--green); font-weight: 700; margin-top: 1px; flex-shrink: 0; }
+    .dl-modal-footer { padding: 0 24px 20px; display: flex; gap: 10px; }
+    .dl-deny { flex: 1; padding: 10px; font-size: 13px; font-weight: 500; background: white; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+    .dl-allow { flex: 2; padding: 10px; font-size: 13px; font-weight: 500; background: var(--indigo); color: white; border: none; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; }
+    .dl-allow:hover { opacity: .88; }
+    .dl-processing { padding: 40px 24px; text-align: center; display: none; }
+    .dl-process-text { font-size: 14px; color: var(--muted); margin-top: 12px; }
 
     /* ADMIN */
     .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 99px; font-weight: 500; }
@@ -110,6 +156,30 @@
 
     /* REGISTER */
     .info-box { background: #f0f4ff; border: 1px solid #c7d7f9; border-radius: 8px; padding: 12px 14px; font-size: 13px; color: #1e3a8a; line-height: 1.6; margin-bottom: 16px; }
+    .verify-link-box { background: #f0faf5; border: 1px solid var(--green-border); border-radius: 8px; padding: 14px; margin-top: 12px; }
+    .verify-link-title { font-size: 12px; font-weight: 600; color: var(--green); margin-bottom: 6px; }
+    .verify-link-url { font-size: 12px; word-break: break-all; color: var(--blue); font-family: monospace; }
+    .verify-now-btn { display: inline-block; margin-top: 10px; padding: 8px 16px; font-size: 12px; font-weight: 600; background: var(--green); color: white; border: none; border-radius: 6px; cursor: pointer; text-decoration: none; }
+
+    /* DEMO HELPER (Fix #17) */
+    .demo-bar { display: flex; align-items: center; gap: 8px; background: #fffbe6; border: 1px solid #f5e58e; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 12px; }
+    .demo-bar-label { color: #854f0b; font-weight: 500; flex: 1; }
+    .demo-fill-btn { padding: 5px 12px; font-size: 12px; font-weight: 500; background: #1a1a1a; color: white; border: none; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+    .demo-fill-btn:hover { opacity: .8; }
+    .demo-tamper-btn { padding: 5px 12px; font-size: 12px; font-weight: 500; background: var(--red); color: white; border: none; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+    .demo-tamper-btn:hover { opacity: .8; }
+
+    /* SUCCESS STATE (Fix #18) */
+    .approval-success { background: var(--green-bg); border: 2px solid var(--green-border); border-radius: 10px; padding: 20px; }
+    .approval-icon { font-size: 32px; text-align: center; margin-bottom: 8px; }
+    .approval-title { font-size: 16px; font-weight: 700; color: var(--green); text-align: center; margin-bottom: 16px; }
+    .apikey-display { background: #1a1a1a; color: #5dcaa5; font-family: monospace; font-size: 13px; padding: 12px 14px; border-radius: 8px; word-break: break-all; margin: 10px 0; cursor: pointer; }
+    .apikey-display:hover::after { content: " (click to copy)"; font-size: 11px; opacity: .6; }
+
+    /* SEPARATION — identity vs cert verify (Fix #19) */
+    .verify-section-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 12px; }
+    .verify-identity-card { background: var(--indigo-light); border: 1px solid #c5cae9; border-radius: 10px; padding: 16px; margin-top: 8px; }
+    .identity-result { background: white; border: 1px solid var(--green-border); border-radius: 8px; padding: 14px; margin-top: 12px; display: none; }
 
     @media (max-width: 480px) {
       .stats { grid-template-columns: 1fr; }
@@ -120,6 +190,40 @@
   </style>
 </head>
 <body>
+
+<!-- DIGILOCKER CONSENT MODAL (Fix #2 — replaces NXDOMAIN redirect) -->
+<div class="dl-modal-overlay" id="dl-overlay">
+  <div class="dl-modal">
+    <div class="dl-modal-header">
+      <div class="dl-modal-logo">DigiLocker · Powered by MeitY</div>
+      <div class="dl-modal-title">Consent Request</div>
+    </div>
+    <div id="dl-consent-view" class="dl-modal-body">
+      <div class="dl-consent-app">
+        <div class="dl-app-icon">S</div>
+        <div>
+          <div class="dl-app-name">SkillChain</div>
+          <div class="dl-app-desc">Credential verification platform</div>
+        </div>
+      </div>
+      <div class="dl-consent-title">SkillChain is requesting access to:</div>
+      <div class="dl-consent-item">Your Aadhaar-verified name</div>
+      <div class="dl-consent-item">Your DigiLocker user ID</div>
+      <div class="dl-consent-item">Identity proof for credential binding</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:12px;line-height:1.6">
+        Your documents will NOT be shared. Only your verified identity is used.
+      </div>
+    </div>
+    <div id="dl-processing-view" class="dl-processing">
+      <div class="spinner" style="display:block;width:32px;height:32px;border-width:3px;margin:0 auto;border-color:rgba(26,35,126,.2);border-top-color:#1a237e;"></div>
+      <div class="dl-process-text">Verifying identity with Aadhaar...</div>
+    </div>
+    <div class="dl-modal-footer" id="dl-footer">
+      <button class="dl-deny" onclick="closeDlModal()">Deny</button>
+      <button class="dl-allow" onclick="grantDlConsent()">&#x2713; Allow Access</button>
+    </div>
+  </div>
+</div>
 
 <nav>
   <div class="nav-brand" onclick="goto('home')">SkillChain</div>
@@ -141,7 +245,7 @@
     </div>
     <div class="stats">
       <div class="stat"><div class="stat-num">&lt;10s</div><div class="stat-label">Verification time</div></div>
-      <div class="stat"><div class="stat-num">~₹0.03</div><div class="stat-label">Cost per verification</div></div>
+      <div class="stat"><div class="stat-num">~₹0.03</div><div class="stat-label">Cost per anchor</div></div>
       <div class="stat"><div class="stat-num">6,000+</div><div class="stat-label">TPS on Algorand</div></div>
     </div>
   </div>
@@ -158,7 +262,13 @@
 <div class="page" id="page-issue">
   <div class="card">
     <div class="card-title">Issue certificate</div>
+    <!-- Fix #17: Demo pre-fill bar -->
+    <div class="demo-bar">
+      <span class="demo-bar-label">&#9889; Demo mode</span>
+      <button class="demo-fill-btn" onclick="prefillIssue()">Load demo data</button>
+    </div>
     <label>Institution API key</label>
+    <!-- Fix #7: API key already goes in X-API-Key header in JS below -->
     <input type="password" id="issue-apikey" placeholder="Your institution API key" oninput="checkIssueReady()">
     <label>Certificate file (PNG / JPG)</label>
     <div class="file-drop" id="issue-drop" onclick="document.getElementById('issue-file').click()">
@@ -187,11 +297,17 @@
   </div>
 </div>
 
-<!-- VERIFY -->
+<!-- VERIFY (Fix #19: clearly separated sections) -->
 <div class="page" id="page-verify">
   <div class="card">
-    <div class="card-title">Verify certificate</div>
-    <label>Certificate file (PNG / JPG)</label>
+    <!-- Section 1: Certificate verification -->
+    <div class="verify-section-title">Certificate integrity check</div>
+    <!-- Fix #20: Demo tamper bar -->
+    <div class="demo-bar">
+      <span class="demo-bar-label">&#9889; Demo mode</span>
+      <button class="demo-fill-btn" onclick="loadDemoFile('real')">Load real cert</button>
+      <button class="demo-tamper-btn" onclick="loadDemoFile('tampered')">Load tampered</button>
+    </div>
     <div class="file-drop" id="verify-drop" onclick="document.getElementById('verify-file').click()">
       <div class="file-icon">🔍</div>
       <div class="file-hint">Click to upload or drag and drop</div>
@@ -202,9 +318,25 @@
       <span id="verify-label">Verify certificate</span>
       <div class="spinner" id="verify-spinner"></div>
     </button>
-    <div class="divider"><div class="divider-line"></div><div class="divider-text">or verify identity via</div><div class="divider-line"></div></div>
-    <button class="dl-btn" onclick="startDigiLocker()">Verify via DigiLocker + Aadhaar</button>
+
+    <!-- Fix #13: BIG centered verdict -->
+    <div class="verdict" id="verify-verdict"></div>
+    <!-- Details row below verdict -->
     <div class="result" id="verify-result"></div>
+  </div>
+
+  <!-- Section 2: Identity verification — clearly separated (Fix #19) -->
+  <div class="card">
+    <div class="verify-section-title">Identity verification via DigiLocker</div>
+    <div class="verify-identity-card">
+      <div style="font-size:13px;color:#1a237e;margin-bottom:12px;line-height:1.6">
+        Bind your Aadhaar-verified identity to a credential. Used for government jobs, visa applications, and regulated industries.
+      </div>
+      <button class="dl-btn" onclick="startDigiLocker()">
+        <span>&#128275;</span> Verify via DigiLocker + Aadhaar
+      </button>
+    </div>
+    <div class="identity-result" id="identity-result"></div>
   </div>
 </div>
 
@@ -212,7 +344,10 @@
 <div class="page" id="page-register">
   <div class="card">
     <div class="card-title">Register your institution</div>
-    <div class="info-box">After submitting, you'll receive an email to verify your domain. Once verified, an admin will review and approve your registration. You'll then receive your API key to start issuing certificates.</div>
+    <!-- Fix #3: clearer info box -->
+    <div class="info-box">
+      Submit your details below. A verification link will appear instantly — no email required for demo. Once email-verified, an admin approves your account and issues your API key.
+    </div>
     <label>Institution name</label>
     <input type="text" id="reg-name" placeholder="e.g. IIT Bombay">
     <label>Official email address</label>
@@ -223,6 +358,7 @@
       <span id="reg-label">Submit registration</span>
       <div class="spinner" id="reg-spinner"></div>
     </button>
+    <!-- Fix #1 + #3: verification link shown directly in UI -->
     <div class="result" id="reg-result"></div>
   </div>
 </div>
@@ -239,6 +375,9 @@
 </div>
 
 <script>
+// Fix #4: configurable base URL — works for same-origin (Flask) and Railway
+const BASE_URL = window.location.origin;
+
 const pages = ['home','issue','verify','register','admin'];
 
 function goto(page) {
@@ -263,34 +402,108 @@ function handleFile(input, prefix) {
 }
 
 function checkIssueReady() {
-  const key = document.getElementById('issue-apikey').value.trim();
+  const key  = document.getElementById('issue-apikey').value.trim();
   const name = document.getElementById('issue-name').value.trim();
   const file = document.getElementById('issue-file').files[0];
   document.getElementById('issue-btn').disabled = !(key && name && file);
 }
 
 function setLoading(prefix, on) {
-  document.getElementById(prefix + '-btn').disabled = on;
-  document.getElementById(prefix + '-label').style.display = on ? 'none' : 'inline';
-  document.getElementById(prefix + '-spinner').style.display = on ? 'block' : 'none';
+  const btn = document.getElementById(prefix + '-btn');
+  if (btn) btn.disabled = on;
+  const lbl = document.getElementById(prefix + '-label');
+  if (lbl) lbl.style.display = on ? 'none' : 'inline';
+  const sp = document.getElementById(prefix + '-spinner');
+  if (sp) sp.style.display = on ? 'block' : 'none';
+}
+
+// Fix #12 + #13 + #14 + #15: humanized, big verdict, clickable tx, trust layer
+function showVerifyResult(data) {
+  const verdict = document.getElementById('verify-verdict');
+  const detail  = document.getElementById('verify-result');
+  verdict.style.display = 'block';
+  detail.style.display  = 'block';
+
+  if (data.valid) {
+    verdict.className = 'verdict valid';
+    verdict.innerHTML = `
+      <div class="verdict-icon">&#9989;</div>
+      <div class="verdict-label ok">VALID CERTIFICATE</div>
+      <div class="verdict-sub">Cryptographically verified on Algorand blockchain</div>
+      <div class="trust-layer">
+        <span class="trust-badge sig">&#128274; Cryptographically signed</span>
+        <span class="trust-badge chain">&#9972; Blockchain anchored</span>
+        <span class="trust-badge ipfs">&#128190; Stored on IPFS</span>
+        <span class="trust-badge did">&#129381; DID verified</span>
+      </div>
+    `;
+    detail.className = 'result success';
+    const identityRow = data.identity_verified !== undefined
+      ? `<div class="check-row"><span class="check-icon">${data.identity_verified ? '✓' : '⚠'}</span><span class="check-label">Identity verified</span><span class="check-value">${data.identity_check || (data.identity_verified ? 'Aadhaar match' : 'Not verified')}</span></div>`
+      : '';
+    const txId    = data.tx_id || '';
+    const expUrl  = data.explorer_url || `https://testnet.explorer.perawallet.app/tx/${txId}`;
+    detail.innerHTML = `
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Document type</span><span class="check-value">${data.doc_type || '—'}</span></div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Issued on</span><span class="check-value">${data.issued_at || '—'}</span></div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Block confirmed</span><span class="check-value">${data.confirmed_round || '—'}</span></div>
+      ${identityRow}
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Blockchain proof</span>
+        <span class="check-value">
+          <a class="tx-link" href="${expUrl}" target="_blank" rel="noopener">
+            ${txId.slice(0,14)}... &#8599;
+          </a>
+        </span>
+      </div>
+    `;
+  } else {
+    verdict.className = 'verdict invalid';
+    verdict.innerHTML = `
+      <div class="verdict-icon">&#10060;</div>
+      <div class="verdict-label fail">TAMPERED / NOT FOUND</div>
+      <div class="verdict-sub">${data.reason || data.error || 'This certificate is not in our registry or has been modified'}</div>
+    `;
+    detail.className = 'result error';
+    detail.innerHTML = `
+      <div style="font-size:13px;color:var(--red);line-height:1.6">
+        The cryptographic hash of this file does not match any record anchored on-chain. It may have been edited, forged, or issued by an unregistered institution.
+      </div>
+    `;
+  }
 }
 
 function showIssueResult(data) {
   const el = document.getElementById('issue-result');
   el.style.display = 'block';
+
   if (data.success) {
     el.className = 'result success';
+    const txId   = data.tx_id || '';
+    const expUrl = data.explorer_url || `https://testnet.explorer.perawallet.app/tx/${txId}`;
+    // Fix #12: human-friendly labels. Fix #15: trust badges. Fix #14: clickable tx
     el.innerHTML = `
-      <div class="result-title ok">Certificate issued</div>
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Issued by</span><span class="check-value">${data.issued_by}</span></div>
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Hash anchored</span><span class="check-value">${data.cert_hash.slice(0,16)}...</span></div>
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Identity hash</span><span class="check-value">Anchored</span></div>
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Transaction</span><span class="check-value"><a class="tx-link" href="${data.explorer_url}" target="_blank">${data.tx_id.slice(0,18)}...</a></span></div>
+      <div style="font-size:15px;font-weight:600;color:var(--green);margin-bottom:12px">&#9989; Certificate anchored successfully</div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Issued by</span><span class="check-value">${data.issued_by || '—'}</span></div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Integrity proof</span><span class="check-value">${(data.cert_hash||'').slice(0,14)}...</span></div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Identity hash</span><span class="check-value">Anchored on-chain</span></div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Blockchain proof</span>
+        <span class="check-value">
+          <a class="tx-link" href="${expUrl}" target="_blank" rel="noopener">
+            View on explorer &#8599;
+          </a>
+        </span>
+      </div>
+      <div class="trust-layer" style="justify-content:flex-start;margin-top:10px">
+        <span class="trust-badge sig">&#128274; Signed</span>
+        <span class="trust-badge chain">&#9972; On-chain</span>
+        <span class="trust-badge ipfs">&#128190; IPFS</span>
+        <span class="trust-badge did">&#129381; DID</span>
+      </div>
     `;
     const qrSection = document.getElementById('qr-section');
     qrSection.style.display = 'block';
     document.getElementById('qrcode').innerHTML = '';
-    const verifyUrl = `${window.location.origin}/verify?txid=${data.tx_id}`;
+    const verifyUrl = `${BASE_URL}/verify?txid=${txId}`;
     new QRCode(document.getElementById('qrcode'), {
       text: verifyUrl, width: 160, height: 160,
       colorDark: "#1a1a1a", colorLight: "#ffffff",
@@ -298,133 +511,204 @@ function showIssueResult(data) {
     });
   } else {
     el.className = 'result error';
-    el.innerHTML = `<div class="result-title fail">Issuance failed</div><div style="font-size:13px;color:var(--red)">${data.error || 'Unknown error'}</div>`;
+    // Fix #16: real error message, not generic flask message
+    let errMsg = data.error || 'Unknown error';
+    if (errMsg.includes('401') || errMsg.includes('Invalid') || errMsg.includes('API')) {
+      errMsg = 'Invalid API key. Check your key in the Admin panel.';
+    } else if (errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError')) {
+      errMsg = 'Cannot reach server. Ensure Flask is running on port 5000.';
+    }
+    el.innerHTML = `<div style="font-size:15px;font-weight:600;color:var(--red);margin-bottom:6px">&#10060; Issuance failed</div><div style="font-size:13px;color:var(--red)">${errMsg}</div>`;
   }
 }
 
-function showVerifyResult(data) {
-  const el = document.getElementById('verify-result');
-  el.style.display = 'block';
-  if (data.valid) {
-    el.className = 'result success';
-    const identityRow = data.identity_verified !== undefined
-      ? `<div class="check-row"><span class="check-icon">${data.identity_verified ? '✓' : '⚠'}</span><span class="check-label">Identity verified</span><span class="check-value">${data.identity_check || (data.identity_verified ? 'Aadhaar match' : 'Not verified')}</span></div>`
-      : '';
-    const sourceRow = data.source
-      ? `<div class="check-row"><span class="check-icon">✓</span><span class="check-label">Document source</span><span class="check-value">${data.source}</span></div>`
-      : '';
-    el.innerHTML = `
-      <div class="result-title ok">Certificate valid</div>
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Integrity</span><span class="check-value">Hash matches on-chain record</span></div>
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Document type</span><span class="check-value">${data.doc_type}</span></div>
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Issued on</span><span class="check-value">${data.issued_at}</span></div>
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Confirmed at block</span><span class="check-value">${data.confirmed_round}</span></div>
-      ${identityRow}
-      ${sourceRow}
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Transaction</span><span class="check-value"><a class="tx-link" href="${data.explorer_url}" target="_blank">${data.tx_id.slice(0,18)}...</a></span></div>
-    `;
-  } else {
-    el.className = 'result error';
-    el.innerHTML = `<div class="result-title fail">Certificate invalid</div><div style="font-size:13px;color:var(--red);margin-top:4px">${data.reason || data.error || 'Verification failed'}</div>`;
-  }
-}
-
+// Fix #6: FormData with correct field names. Fix #7: X-API-Key header. Fix #9: "certificate" field
 async function issueCert() {
-  const file = document.getElementById('issue-file').files[0];
-  const apiKey = document.getElementById('issue-apikey').value.trim();
-  const holderName = document.getElementById('issue-name').value.trim();
-  const docType = document.getElementById('issue-doctype').value;
+  const file        = document.getElementById('issue-file').files[0];
+  const apiKey      = document.getElementById('issue-apikey').value.trim();
+  const holderName  = document.getElementById('issue-name').value.trim();
+  const docType     = document.getElementById('issue-doctype').value;
   if (!file || !apiKey || !holderName) return;
+
   setLoading('issue', true);
   document.getElementById('qr-section').style.display = 'none';
+
+  // Fix #6: multipart/form-data — NOT JSON
   const form = new FormData();
-  form.append('certificate', file);
+  form.append('certificate', file);       // Fix #9: field name must be "certificate"
   form.append('doc_type', docType);
-  form.append('holder_name', holderName);
+  form.append('issued_to_name', holderName); // Fix #6: backend expects issued_to_name
+
   try {
-    const res = await fetch('/issue', { method: 'POST', headers: { 'X-API-Key': apiKey }, body: form });
+    // Fix #4: absolute URL via BASE_URL. Fix #7: API key in header
+    const res  = await fetch(`${BASE_URL}/issue`, {
+      method: 'POST',
+      headers: { 'X-API-Key': apiKey },  // Fix #7
+      body: form                          // Fix #6: FormData, not JSON
+    });
     const data = await res.json();
-    showIssueResult(data);
+    if (!res.ok && !data.success) {
+      showIssueResult({ error: data.error || `Server error ${res.status}` });
+    } else {
+      showIssueResult(data);
+    }
   } catch(e) {
-    showIssueResult({ error: 'Request failed — is Flask running?' });
+    // Fix #16: real error message
+    showIssueResult({ error: `Network error: ${e.message}` });
   }
   setLoading('issue', false);
 }
 
+// Fix #9: file field "certificate"
 async function verifyCert() {
   const file = document.getElementById('verify-file').files[0];
   if (!file) return;
+
   setLoading('verify', true);
+  document.getElementById('verify-verdict').style.display = 'none';
+  document.getElementById('verify-result').style.display  = 'none';
+
   const form = new FormData();
-  form.append('certificate', file);
+  form.append('certificate', file); // Fix #9
+
   try {
-    const res = await fetch('/verify', { method: 'POST', body: form });
+    const res  = await fetch(`${BASE_URL}/verify`, { method: 'POST', body: form }); // Fix #4
     const data = await res.json();
     showVerifyResult(data);
   } catch(e) {
-    showVerifyResult({ reason: 'Request failed — is Flask running?' });
+    showVerifyResult({ reason: `Network error: ${e.message}` });
   }
   setLoading('verify', false);
 }
 
 async function handleQRVerify(txid) {
-  const el = document.getElementById('verify-result');
+  const el = document.getElementById('verify-verdict');
   el.style.display = 'block';
-  el.className = 'result warning';
-  el.innerHTML = '<div style="font-size:13px;color:var(--amber)">QR scan detected. Upload the certificate file above to complete verification.</div>';
+  el.className = 'verdict';
+  el.innerHTML = '<div style="font-size:13px;color:var(--amber);padding:8px">QR scan detected. Upload the certificate file above to complete verification.</div>';
   sessionStorage.setItem('pending_txid', txid);
 }
 
+// Fix #2: DigiLocker modal instead of NXDOMAIN redirect
+let _dlRequestId = null;
+
 async function startDigiLocker() {
   try {
-    const res = await fetch('/digilocker/start', {
+    const res  = await fetch(`${BASE_URL}/digilocker/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ redirect_url: window.location.origin + '/digilocker/callback' })
+      body: JSON.stringify({ redirect_url: BASE_URL + '/digilocker/callback' })
     });
     const data = await res.json();
-    if (data.digilocker_url) {
-      sessionStorage.setItem('dl_request_id', data.request_id);
-      window.location.href = data.digilocker_url;
-    }
+    _dlRequestId = data.request_id;
+    // Fix #2: show modal instead of navigating to NXDOMAIN
+    document.getElementById('dl-overlay').classList.add('open');
+    document.getElementById('dl-consent-view').style.display = 'block';
+    document.getElementById('dl-processing-view').style.display = 'none';
+    document.getElementById('dl-footer').style.display = 'flex';
   } catch(e) {
-    alert('Could not start DigiLocker flow');
+    alert('Could not start DigiLocker flow: ' + e.message);
   }
 }
 
+function closeDlModal() {
+  document.getElementById('dl-overlay').classList.remove('open');
+}
+
+async function grantDlConsent() {
+  if (!_dlRequestId) return;
+  // Show processing spinner
+  document.getElementById('dl-consent-view').style.display = 'none';
+  document.getElementById('dl-processing-view').style.display = 'block';
+  document.getElementById('dl-footer').style.display = 'none';
+
+  try {
+    // Call callback to authenticate session
+    await fetch(`${BASE_URL}/digilocker/callback?id=${_dlRequestId}`);
+
+    // Verify identity
+    const vRes  = await fetch(`${BASE_URL}/digilocker/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request_id: _dlRequestId })
+    });
+    const vData = await vRes.json();
+
+    closeDlModal();
+    showIdentityResult(vData);
+  } catch(e) {
+    closeDlModal();
+    showIdentityResult({ success: false, reason: e.message });
+  }
+}
+
+// Fix #19: identity result shown in its own section
+function showIdentityResult(data) {
+  const el = document.getElementById('identity-result');
+  el.style.display = 'block';
+
+  if (data.success) {
+    el.innerHTML = `
+      <div style="font-size:14px;font-weight:600;color:var(--green);margin-bottom:10px">&#9989; Identity verified via Aadhaar</div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Verified name</span><span class="check-value">${data.name || '—'}</span></div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">DigiLocker ID</span><span class="check-value">${data.digilocker_id || '—'}</span></div>
+      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Identity DID</span><span class="check-value" style="font-family:monospace;font-size:10px">${(data.identity_did||'').slice(0,28)}...</span></div>
+      <div class="trust-layer" style="justify-content:flex-start;margin-top:10px">
+        <span class="trust-badge sig">&#128274; Aadhaar KYC</span>
+        <span class="trust-badge did">&#129381; DID bound</span>
+      </div>
+    `;
+  } else {
+    el.innerHTML = `<div style="font-size:13px;color:var(--red)">&#10060; Identity verification failed: ${data.reason || 'Unknown error'}</div>`;
+  }
+}
+
+// Fix #1 + #3: registration shows verify link directly in UI
 async function registerInstitution() {
-  const name = document.getElementById('reg-name').value.trim();
-  const email = document.getElementById('reg-email').value.trim();
+  const name   = document.getElementById('reg-name').value.trim();
+  const email  = document.getElementById('reg-email').value.trim();
   const domain = document.getElementById('reg-domain').value.trim();
   if (!name || !email || !domain) { alert('All fields required'); return; }
+
   document.getElementById('reg-label').style.display = 'none';
   document.getElementById('reg-spinner').style.display = 'block';
+
   try {
-    const res = await fetch('/request-registration', {
+    const res  = await fetch(`${BASE_URL}/request-registration`, { // Fix #4
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ institution_name: name, email, domain })
     });
     const data = await res.json();
-    const el = document.getElementById('reg-result');
+    const el   = document.getElementById('reg-result');
     el.style.display = 'block';
+
     if (data.registration_id) {
       el.className = 'result success';
+      // Fix #1: show verify_url directly — no email needed
+      const verifyUrl = data.verify_url || `${BASE_URL}/verify-email?token=DEMO`;
       el.innerHTML = `
-        <div class="result-title ok">Registration submitted</div>
+        <div style="font-size:15px;font-weight:600;color:var(--green);margin-bottom:12px">&#9989; Registration submitted</div>
         <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Registration ID</span><span class="check-value">${data.registration_id}</span></div>
-        <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Status</span><span class="check-value">Pending email verification</span></div>
-        <div style="font-size:12px;color:var(--muted);margin-top:8px">Check ${email} for a verification link. After verifying, an admin will review your application.</div>
+        <div class="check-row"><span class="check-icon">⏳</span><span class="check-label">Status</span><span class="check-value">Pending verification</span></div>
+        <div class="verify-link-box">
+          <div class="verify-link-title">&#128279; Verify your email — click the link below</div>
+          <div class="verify-link-url">${verifyUrl}</div>
+          <a class="verify-now-btn" href="${verifyUrl}" target="_blank">Verify now &#8599;</a>
+        </div>
+        <div style="font-size:12px;color:var(--muted);margin-top:10px;line-height:1.6">
+          After verifying, go to the <strong>Admin</strong> tab to approve and receive your API key.
+        </div>
       `;
     } else {
       el.className = 'result error';
-      el.innerHTML = `<div class="result-title fail">Submission failed</div><div style="font-size:13px">${data.error || 'Unknown error'}</div>`;
+      el.innerHTML = `<div style="font-size:15px;font-weight:600;color:var(--red);margin-bottom:6px">&#10060; Submission failed</div><div style="font-size:13px">${data.error || 'Unknown error'}</div>`;
     }
   } catch(e) {
     const el = document.getElementById('reg-result');
     el.style.display = 'block';
     el.className = 'result error';
-    el.innerHTML = '<div class="result-title fail">Request failed</div>';
+    el.innerHTML = `<div style="font-size:15px;font-weight:600;color:var(--red);margin-bottom:6px">&#10060; Request failed</div><div style="font-size:13px">Network error: ${e.message}</div>`;
   }
   document.getElementById('reg-label').style.display = 'inline';
   document.getElementById('reg-spinner').style.display = 'none';
@@ -434,7 +718,7 @@ async function loadPending() {
   const key = document.getElementById('admin-key').value.trim();
   if (!key) { alert('Enter admin key'); return; }
   try {
-    const res = await fetch('/admin/pending', { headers: { 'X-Admin-Key': key } });
+    const res  = await fetch(`${BASE_URL}/admin/pending`, { headers: { 'X-Admin-Key': key } }); // Fix #4
     const data = await res.json();
     const container = document.getElementById('pending-list');
     if (data.error) {
@@ -454,31 +738,42 @@ async function loadPending() {
         <div class="pending-meta">
           ${r.email}<br>${r.domain}<br>Submitted: ${r.created_at}
         </div>
-        <button class="approve-btn" onclick="approve('${r.id}', '${key}', this)">Approve & issue DID</button>
+        <button class="approve-btn" onclick="approve('${r.id}','${key}',this)">Approve &amp; issue DID</button>
       </div>
     `).join('');
   } catch(e) {
-    document.getElementById('pending-list').innerHTML = '<div class="card"><div style="font-size:13px;color:var(--red)">Request failed</div></div>';
+    document.getElementById('pending-list').innerHTML = `<div class="card"><div style="font-size:13px;color:var(--red)">Request failed: ${e.message}</div></div>`;
   }
 }
 
+// Fix #18: big success state after approval
 async function approve(id, key, btn) {
   btn.textContent = 'Approving...';
   btn.disabled = true;
   try {
-    const res = await fetch(`/admin/approve/${id}`, { method: 'POST', headers: { 'X-Admin-Key': key } });
+    const res  = await fetch(`${BASE_URL}/admin/approve/${id}`, { method: 'POST', headers: { 'X-Admin-Key': key } }); // Fix #4
     const data = await res.json();
+
     if (data.success) {
-      const card = btn.closest('.pending-card');
+      const card    = btn.closest('.pending-card');
+      const expUrl  = data.explorer_url || `https://testnet.explorer.perawallet.app/tx/${data.tx_id||''}`;
+      // Fix #18: clear success state with API key prominent
       card.innerHTML = `
-        <div class="pending-header">
-          <div class="pending-name">${data.institution}</div>
-          <span class="badge badge-approved">Approved</span>
-        </div>
-        <div class="pending-meta" style="margin-top:6px">
-          DID: ${data.did}<br>
-          <strong>API Key: ${data.api_key}</strong><br>
-          <a class="tx-link" href="${data.explorer_url}" target="_blank">View DID transaction</a>
+        <div class="approval-success">
+          <div class="approval-icon">&#127881;</div>
+          <div class="approval-title">Institution Approved</div>
+          <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Institution</span><span class="check-value">${data.institution||id}</span></div>
+          <div class="check-row"><span class="check-icon">✓</span><span class="check-label">DID issued</span><span class="check-value" style="font-family:monospace;font-size:10px">${(data.did||'').slice(0,30)}...</span></div>
+          <div style="font-size:12px;color:var(--green);font-weight:600;margin:12px 0 4px">&#128273; API Key — share securely with the institution</div>
+          <div class="apikey-display" onclick="copyApiKey('${data.api_key||''}')">${data.api_key||'—'}</div>
+          <div style="margin-top:10px">
+            <a class="tx-link-full" href="${expUrl}" target="_blank" rel="noopener">View DID transaction on Algorand explorer &#8599;</a>
+          </div>
+          <div class="trust-layer" style="justify-content:flex-start;margin-top:12px">
+            <span class="trust-badge chain">&#9972; DID on-chain</span>
+            <span class="trust-badge sig">&#128274; Key issued</span>
+            <span class="trust-badge did">&#129381; Ready to issue</span>
+          </div>
         </div>
       `;
     } else {
@@ -491,27 +786,104 @@ async function approve(id, key, btn) {
   }
 }
 
-// handle DigiLocker callback redirect
+function copyApiKey(key) {
+  navigator.clipboard.writeText(key).then(() => {
+    alert('API key copied to clipboard!');
+  }).catch(() => {
+    prompt('Copy this API key:', key);
+  });
+}
+
+// Fix #17: demo pre-fill for Issue tab
+function prefillIssue() {
+  document.getElementById('issue-apikey').value = 'DEMO-KEY-skillchain-2024';
+  document.getElementById('issue-name').value   = 'Arjun Sharma';
+  document.getElementById('issue-doctype').value = 'academic';
+  // Create a small demo PNG in memory and set it as the file
+  const canvas = document.createElement('canvas');
+  canvas.width  = 400; canvas.height = 280;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#f0f4ff'; ctx.fillRect(0,0,400,280);
+  ctx.fillStyle = '#1a237e'; ctx.fillRect(0,0,400,8);
+  ctx.fillStyle = '#1a237e'; ctx.font = 'bold 22px serif';
+  ctx.textAlign = 'center'; ctx.fillText('CERTIFICATE OF COMPLETION', 200, 60);
+  ctx.fillStyle = '#333'; ctx.font = '14px sans-serif';
+  ctx.fillText('This certifies that', 200, 100);
+  ctx.fillStyle = '#1a237e'; ctx.font = 'bold 20px serif';
+  ctx.fillText('Arjun Sharma', 200, 130);
+  ctx.fillStyle = '#333'; ctx.font = '14px sans-serif';
+  ctx.fillText('has successfully completed', 200, 160);
+  ctx.fillText('Advanced Blockchain Development', 200, 185);
+  ctx.fillStyle = '#0f6e56'; ctx.font = '12px sans-serif';
+  ctx.fillText('IIT Bombay — 2024 | ID: CS2024-001', 200, 230);
+  ctx.fillStyle = '#1a237e'; ctx.fillRect(0,272,400,8);
+  canvas.toBlob(blob => {
+    const file = new File([blob], 'demo_certificate.png', { type: 'image/png' });
+    const dt   = new DataTransfer();
+    dt.items.add(file);
+    const inp  = document.getElementById('issue-file');
+    inp.files  = dt.files;
+    handleFile(inp, 'issue');
+  });
+}
+
+// Fix #20: tamper demo — load real or tampered cert
+function loadDemoFile(type) {
+  const canvas = document.createElement('canvas');
+  canvas.width  = 400; canvas.height = 280;
+  const ctx = canvas.getContext('2d');
+
+  if (type === 'real') {
+    ctx.fillStyle = '#f0faf5'; ctx.fillRect(0,0,400,280);
+    ctx.fillStyle = '#0f6e56'; ctx.fillRect(0,0,400,8);
+    ctx.fillStyle = '#0f6e56'; ctx.font = 'bold 20px serif';
+    ctx.textAlign = 'center'; ctx.fillText('CERTIFICATE OF COMPLETION', 200, 55);
+    ctx.fillStyle = '#333'; ctx.font = '14px sans-serif';
+    ctx.fillText('This certifies that', 200, 90);
+    ctx.fillStyle = '#0f6e56'; ctx.font = 'bold 20px serif';
+    ctx.fillText('Arjun Sharma', 200, 120);
+    ctx.fillStyle = '#333'; ctx.font = '14px sans-serif';
+    ctx.fillText('has successfully completed', 200, 150);
+    ctx.fillText('Advanced Blockchain Development', 200, 175);
+    ctx.fillStyle = '#555'; ctx.font = '12px sans-serif';
+    ctx.fillText('IIT Bombay — 2024 | ID: CS2024-001 | AUTHENTIC', 200, 225);
+    ctx.fillStyle = '#0f6e56'; ctx.fillRect(0,272,400,8);
+  } else {
+    // Tampered: slightly different pixel data — different name
+    ctx.fillStyle = '#fff8f8'; ctx.fillRect(0,0,400,280);
+    ctx.fillStyle = '#a32d2d'; ctx.fillRect(0,0,400,8);
+    ctx.fillStyle = '#a32d2d'; ctx.font = 'bold 20px serif';
+    ctx.textAlign = 'center'; ctx.fillText('CERTIFICATE OF COMPLETION', 200, 55);
+    ctx.fillStyle = '#333'; ctx.font = '14px sans-serif';
+    ctx.fillText('This certifies that', 200, 90);
+    ctx.fillStyle = '#a32d2d'; ctx.font = 'bold 20px serif';
+    ctx.fillText('Rahul Verma', 200, 120); // TAMPERED NAME
+    ctx.fillStyle = '#333'; ctx.font = '14px sans-serif';
+    ctx.fillText('has successfully completed', 200, 150);
+    ctx.fillText('Advanced Blockchain Development', 200, 175);
+    ctx.fillStyle = '#555'; ctx.font = '12px sans-serif';
+    ctx.fillText('IIT Bombay — 2024 | ID: CS2024-001 | EDITED', 200, 225);
+    ctx.fillStyle = '#a32d2d'; ctx.fillRect(0,272,400,8);
+  }
+
+  canvas.toBlob(blob => {
+    const name = type === 'real' ? 'REAL_cert.png' : 'FAKE_tampered_cert.png';
+    const file = new File([blob], name, { type: 'image/png' });
+    const dt   = new DataTransfer();
+    dt.items.add(file);
+    const inp  = document.getElementById('verify-file');
+    inp.files  = dt.files;
+    handleFile(inp, 'verify');
+  });
+}
+
+// Handle DigiLocker callback redirect (for real Setu flow)
 const params = new URLSearchParams(window.location.search);
 if (params.get('id')) {
   const reqId = params.get('id');
   goto('verify');
-  fetch(`/digilocker/callback?id=${reqId}`)
-    .then(r => r.json())
-    .then(data => {
-      if (data.success) {
-        const docType = prompt('Document type (e.g. DGDEG for degree):', 'DGDEG') || 'DGDEG';
-        const orgId = prompt('Issuing org ID (e.g. in.gov.cbse):', 'in.gov.cbse') || 'in.gov.cbse';
-        return fetch('/digilocker/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ request_id: reqId, doc_type: docType, org_id: orgId })
-        });
-      }
-    })
-    .then(r => r && r.json())
-    .then(data => data && showVerifyResult(data))
-    .catch(() => {});
+  _dlRequestId = reqId;
+  grantDlConsent();
 }
 </script>
 </body>

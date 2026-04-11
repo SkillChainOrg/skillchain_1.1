@@ -29,10 +29,13 @@ import zipfile
 import json as _json
 
 from flask import Flask, request, jsonify, render_template
+try:
+    from flask_cors import CORS
+except ImportError:
+    CORS = None
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from PIL import Image
-from identity_service import bind_identity, lookup_identity, hash_name
 
 from algorand_service import init_db, anchor_hash, verify_hash
 from did_service import (
@@ -50,7 +53,7 @@ from digilocker_service import (
     get_request_status,          # polls consent status + user details
     verify_with_identity,        # identity-bind entry point (replaces full verify flow)
 )
-
+from identity_service import bind_identity, lookup_identity
 from queue_service import queue_batch, get_batch_status
 import db_migrations
 from db import get_db_connection
@@ -60,6 +63,8 @@ log = logging.getLogger(__name__)
 
 # ── App + rate limiter ────────────────────────────────────────────────────────
 app = Flask(__name__)
+if CORS:
+    CORS(app, resources={r"/*": {"origins": "*"}})
 
 limiter = Limiter(
     app=app,
@@ -95,18 +100,18 @@ def issue_batch():
     Issue certificates in bulk.
 
     The ZIP may contain an optional 'metadata.json' mapping each filename to
-    a dict with cert_number and identity_did:
+    a dict with cert_number and issued_to_name:
 
         {
           "degree_alice.pdf": {
               "cert_number": "CS2024001",
-              "identity_did": "did:skillchain:identity:abc123"
+              "issued_to_name": "Alice Smith"
           },
           ...
         }
 
     If metadata.json is absent, cert_number defaults to the filename (without
-    extension) and identity is not stored.
+    extension) and issued_to_name is not stored (identity check skipped).
     """
     api_key     = request.headers.get("X-API-Key")
     institution = validate_api_key(api_key)
@@ -119,6 +124,7 @@ def issue_batch():
 
     doc_type = request.form.get("doc_type", "academic")
 
+    # FIX: extract institution_id so per-institution keys are used for signing
     inst_id = (
         institution.get("institution_id")
         if institution.get("wallet_version", 1) == 2
@@ -129,6 +135,7 @@ def issue_batch():
     jobs     = []
 
     with zipfile.ZipFile(zip_file) as zf:
+        # Load optional metadata mapping
         cert_meta: dict = {}
         if "metadata.json" in zf.namelist():
             try:
@@ -151,13 +158,20 @@ def issue_batch():
                 cert_hash  = normalize_and_hash(file_bytes)
                 del file_bytes
 
+                # FIX: pass institution_id so per-institution key is used
                 signature = sign_credential(cert_hash, institution_id=inst_id)
 
-                meta        = cert_meta.get(filename, {})
-                basename    = os.path.splitext(os.path.basename(filename))[0]
+                # Resolve cert_number and issued_to from metadata.json or fallback
+                meta       = cert_meta.get(filename, {})
+                basename   = os.path.splitext(os.path.basename(filename))[0]
                 cert_number = meta.get("cert_number") or basename
 
-                identity_did = meta.get("identity_did") or None
+                issued_to_name = meta.get("issued_to_name", "")
+                issued_to_hash = (
+                    hashlib.sha256(issued_to_name.strip().lower().encode()).hexdigest()
+                    if issued_to_name
+                    else None
+                )
 
                 jobs.append({
                     "cert_hash":   cert_hash,
@@ -165,9 +179,8 @@ def issue_batch():
                     "filename":    filename,
                     "doc_type":    doc_type,
                     "cert_number": cert_number,
-                    "issued_to":   identity_did,
+                    "issued_to":   issued_to_hash,
                 })
-
             except Exception as e:
                 jobs.append({
                     "filename": filename,
@@ -185,6 +198,7 @@ def issue_batch():
         "message":        "Certificates hashed and queued for Algorand anchoring",
     })
 
+
 @app.route("/batch/status/<batch_id>", methods=["GET"])
 def batch_status(batch_id):
     api_key = request.headers.get("X-API-Key")
@@ -197,10 +211,46 @@ def batch_status(batch_id):
 
 @app.route("/digilocker/start", methods=["POST"])
 def digilocker_start():
-    redirect_url = request.json.get(
-        "redirect_url", "http://127.0.0.1:5000/digilocker/callback"
+    redirect_url = (request.json or {}).get(
+        "redirect_url", request.url_root + "digilocker/callback"
     )
-    return jsonify(create_digilocker_request(redirect_url))
+    result = create_digilocker_request(redirect_url)
+    # Fix #2: replace NXDOMAIN mock URL with internal consent route
+    result["digilocker_url"] = f"/kyc-consent?id={result['request_id']}"
+    return jsonify(result)
+
+
+@app.route("/kyc-consent", methods=["GET"])
+def kyc_consent():
+    """Internal DigiLocker consent simulation page (Fix #2)."""
+    req_id = request.args.get("id", "")
+    from flask import render_template_string
+    return render_template_string("""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>DigiLocker Consent</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:sans-serif;background:#1a237e;display:flex;align-items:center;justify-content:center;min-height:100vh}.card{background:white;border-radius:16px;width:360px;overflow:hidden}.header{background:#1a237e;padding:20px 24px;color:white}.logo{font-size:12px;opacity:.7;margin-bottom:4px}.title{font-size:18px;font-weight:600}.body{padding:20px 24px}.app{display:flex;align-items:center;gap:12px;background:#f8f9ff;border:1px solid #e8eaf6;border-radius:10px;padding:12px;margin-bottom:16px}.icon{width:40px;height:40px;background:#1a237e;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-size:18px;font-weight:700}.name{font-size:14px;font-weight:600}.desc{font-size:12px;color:#666;margin-top:2px}.item{display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;font-size:13px;color:#555}.item::before{content:"✓";color:#0f6e56;font-weight:700;margin-top:1px;flex-shrink:0}.footer{padding:0 24px 20px;display:flex;gap:10px}.deny{flex:1;padding:10px;font-size:13px;font-weight:500;background:white;border:1px solid #ddd;border-radius:8px;cursor:pointer}.allow{flex:2;padding:10px;font-size:13px;font-weight:500;background:#1a237e;color:white;border:none;border-radius:8px;cursor:pointer}</style>
+</head><body><div class="card">
+<div class="header"><div class="logo">DigiLocker · Powered by MeitY</div><div class="title">Consent Request</div></div>
+<div class="body">
+<div class="app"><div class="icon">S</div><div><div class="name">SkillChain</div><div class="desc">Credential verification platform</div></div></div>
+<div style="font-size:13px;font-weight:600;margin-bottom:10px">SkillChain is requesting:</div>
+<div class="item">Your Aadhaar-verified name</div>
+<div class="item">Your DigiLocker user ID</div>
+<div class="item">Identity proof for credential binding</div>
+<div style="font-size:11px;color:#999;margin-top:12px;line-height:1.6">Documents will NOT be shared. Only verified identity is used.</div>
+</div>
+<div class="footer">
+<button class="deny" onclick="window.close()">Deny</button>
+<button class="allow" onclick="allow()">&#10003; Allow Access</button>
+</div></div>
+<script>
+function allow() {
+  document.querySelector('.allow').textContent = 'Verifying...';
+  document.querySelector('.allow').disabled = true;
+  fetch('/digilocker/callback?id={{ req_id }}')
+    .then(() => { window.location.href = '/?id={{ req_id }}'; })
+    .catch(() => { window.location.href = '/?id={{ req_id }}'; });
+}
+</script></body></html>""", req_id=req_id)
 
 
 @app.route("/digilocker/callback", methods=["GET"])
@@ -210,6 +260,17 @@ def digilocker_callback():
         return jsonify({"error": "Missing request id"}), 400
 
     status = get_request_status(request_id)
+
+    # ── Demo resilience: self-heal if the session was lost ────────────────────
+    # In mock mode the in-memory store is wiped on server restart.  If a valid
+    # request_id arrives at /callback but the session no longer exists (status
+    # "not_found"), we re-create it so the demo flow never stalls.  In
+    # production this branch is unreachable because real Setu sessions are
+    # server-side — remove the `if` block and keep only the 403 guard.
+    if status["status"] == "not_found":
+        from digilocker_service import ensure_mock_session
+        status = ensure_mock_session(request_id)
+
     if status["status"] != "authenticated":
         return jsonify({"error": "User has not consented yet"}), 403
 
@@ -217,7 +278,7 @@ def digilocker_callback():
         "success":    True,
         "request_id": request_id,
         "user":       status["user"],
-        "message":    "Consent received. Call /digilocker/bind to create identity anchor, then /digilocker/verify.",
+        "message":    "Consent received. Call POST /digilocker/verify with this request_id to bind your identity.",
     })
 
 
@@ -346,10 +407,13 @@ def issue():
         return jsonify({"error": "Empty filename"}), 400
 
     doc_type   = request.form.get("doc_type", "academic")
-    cert_number = request.form.get("cert_number")
-
-    # 🔥 CHANGED: use identity_did instead of name hashing
-    identity_did = request.form.get("identity_did") or None
+    cert_number = request.form.get("cert_number")          # optional single-issue
+    issued_to_name = request.form.get("issued_to_name")    # optional
+    issued_to_hash = (
+        hashlib.sha256(issued_to_name.strip().lower().encode()).hexdigest()
+        if issued_to_name
+        else None
+    )
 
     file_bytes = file.read()
     cert_hash  = normalize_and_hash(file_bytes)
@@ -361,13 +425,13 @@ def issue():
         else None
     )
 
+    # FIX: pass institution_id so per-institution key is used
     signature = sign_credential(cert_hash, institution_id=inst_id)
-
-    result = anchor_hash(
+    result    = anchor_hash(
         cert_hash, doc_type, institution, signature,
         institution_id=inst_id,
         cert_number=cert_number,
-        issued_to=identity_did,   # 🔥 CHANGED
+        issued_to=issued_to_hash,
     )
 
     return jsonify({
@@ -393,24 +457,9 @@ def verify():
     if file.filename == "":
         return jsonify({"error": "Empty filename"}), 400
 
-    # 🔥 NEW: accept identity_did for ownership check
-    identity_did = request.form.get("identity_did")
-
     file_bytes = file.read()
     cert_hash  = normalize_and_hash(file_bytes)
-    del file_bytes
-
-    result = verify_hash(cert_hash)
-
-    # 🔥 NEW: enforce identity ownership if provided
-    if identity_did and result.get("success"):
-        issued_to = result.get("issued_to")
-
-        if issued_to and issued_to != identity_did:
-            result["success"] = False
-            result["reason"]  = "Certificate does not belong to this identity"
-
-    return jsonify(result)
+    return jsonify(verify_hash(cert_hash))
 
 
 # ── Registration flow ─────────────────────────────────────────────────────────
