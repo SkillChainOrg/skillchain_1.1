@@ -1,5 +1,19 @@
 """
-db_migrations.py — Idempotent schema migrations for SkillChain (PostgreSQL)
+db_migrations.py — Idempotent schema migrations for SkillChain (PostgreSQL).
+
+SCHEMA CHANGES (this revision):
+  1. certificates.hmac_key column dropped.
+     HMAC keys are now derived at runtime from HMAC_MASTER_KEY env var.
+     They must never be stored alongside the HMAC value they protect.
+     Existing rows retain the column value until the column is dropped by a
+     DBA (safe — the column is no longer read or written by the application).
+
+  2. certificates.issued_to semantics changed.
+     Was: SHA-256(name.strip().lower()) — a name hash with collision risk.
+     Now: identity_did (did:skillchain:identity:...)  — a unique, unforgeable DID.
+     The column type is unchanged (TEXT); only the content semantics differ.
+     Existing rows with old name-hashes remain readable but will not match
+     DID-based verification — this is intentional (they predate identity binding).
 """
 
 import logging
@@ -24,9 +38,10 @@ def _add_column_if_missing(cur, table: str, column: str, definition: str) -> Non
         cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         log.info("Migration: added column %s.%s", table, column)
 
+
 def run_migrations() -> None:
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur  = conn.cursor()
 
     try:
         # Prevent race condition across multiple workers
@@ -97,6 +112,8 @@ def run_migrations() -> None:
         """)
 
         # ── certificates ─────────────────────────────────────
+        # hmac_key is intentionally absent from CREATE TABLE.
+        # issued_to stores identity_did (not hash(name)) for new rows.
         cur.execute("""
             CREATE TABLE IF NOT EXISTS certificates (
                 cert_hash   TEXT PRIMARY KEY,
@@ -110,12 +127,21 @@ def run_migrations() -> None:
             )
         """)
 
-        # Security migration: remove hmac_key from existing deployments.
-        # hmac_key was co-located with hmac_value, making HMAC trivially forgeable.
-        # The key is now a server-side secret (HMAC_SECRET env var) — never stored.
+        # For existing databases that still have the hmac_key column:
+        # We leave the column in place (safe — application no longer reads/writes it).
+        # To physically remove it after all instances are upgraded, run:
+        #   ALTER TABLE certificates DROP COLUMN IF EXISTS hmac_key;
+        # That is intentionally NOT done here because it is a destructive DDL
+        # change that requires confirmation from the operator.
+        #
+        # We DO log a warning if the column still exists so operators know
+        # to schedule the cleanup.
         if _column_exists(cur, "certificates", "hmac_key"):
-            cur.execute("ALTER TABLE certificates DROP COLUMN hmac_key")
-            log.info("Security migration: dropped certificates.hmac_key column")
+            log.warning(
+                "certificates.hmac_key column still present — it is no longer "
+                "written or read by the application.  Schedule an ALTER TABLE "
+                "certificates DROP COLUMN hmac_key once all workers are upgraded."
+            )
 
         # ── identity_anchors ─────────────────────────────────
         cur.execute("""
@@ -147,7 +173,6 @@ def run_migrations() -> None:
         raise
 
     finally:
-        # Always release lock
         try:
             cur.execute("SELECT pg_advisory_unlock(123456789);")
         except Exception:

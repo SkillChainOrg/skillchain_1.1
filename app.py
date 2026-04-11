@@ -32,6 +32,7 @@ from flask import Flask, request, jsonify, render_template
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from PIL import Image
+from identity_service import bind_identity, lookup_identity, hash_name
 
 from algorand_service import init_db, anchor_hash, verify_hash
 from did_service import (
@@ -49,7 +50,7 @@ from digilocker_service import (
     get_request_status,          # polls consent status + user details
     verify_with_identity,        # identity-bind entry point (replaces full verify flow)
 )
-from identity_service import bind_identity, lookup_identity
+
 from queue_service import queue_batch, get_batch_status
 import db_migrations
 from db import get_db_connection
@@ -94,18 +95,18 @@ def issue_batch():
     Issue certificates in bulk.
 
     The ZIP may contain an optional 'metadata.json' mapping each filename to
-    a dict with cert_number and issued_to_name:
+    a dict with cert_number and identity_did:
 
         {
           "degree_alice.pdf": {
               "cert_number": "CS2024001",
-              "issued_to_name": "Alice Smith"
+              "identity_did": "did:skillchain:identity:abc123"
           },
           ...
         }
 
     If metadata.json is absent, cert_number defaults to the filename (without
-    extension) and issued_to_name is not stored (identity check skipped).
+    extension) and identity is not stored.
     """
     api_key     = request.headers.get("X-API-Key")
     institution = validate_api_key(api_key)
@@ -118,7 +119,6 @@ def issue_batch():
 
     doc_type = request.form.get("doc_type", "academic")
 
-    # FIX: extract institution_id so per-institution keys are used for signing
     inst_id = (
         institution.get("institution_id")
         if institution.get("wallet_version", 1) == 2
@@ -129,7 +129,6 @@ def issue_batch():
     jobs     = []
 
     with zipfile.ZipFile(zip_file) as zf:
-        # Load optional metadata mapping
         cert_meta: dict = {}
         if "metadata.json" in zf.namelist():
             try:
@@ -152,20 +151,13 @@ def issue_batch():
                 cert_hash  = normalize_and_hash(file_bytes)
                 del file_bytes
 
-                # FIX: pass institution_id so per-institution key is used
                 signature = sign_credential(cert_hash, institution_id=inst_id)
 
-                # Resolve cert_number and issued_to from metadata.json or fallback
-                meta       = cert_meta.get(filename, {})
-                basename   = os.path.splitext(os.path.basename(filename))[0]
+                meta        = cert_meta.get(filename, {})
+                basename    = os.path.splitext(os.path.basename(filename))[0]
                 cert_number = meta.get("cert_number") or basename
 
-                issued_to_name = meta.get("issued_to_name", "")
-                issued_to_hash = (
-                    hashlib.sha256(issued_to_name.strip().lower().encode()).hexdigest()
-                    if issued_to_name
-                    else None
-                )
+                identity_did = meta.get("identity_did") or None
 
                 jobs.append({
                     "cert_hash":   cert_hash,
@@ -173,8 +165,9 @@ def issue_batch():
                     "filename":    filename,
                     "doc_type":    doc_type,
                     "cert_number": cert_number,
-                    "issued_to":   issued_to_hash,
+                    "issued_to":   identity_did,
                 })
+
             except Exception as e:
                 jobs.append({
                     "filename": filename,
@@ -191,7 +184,6 @@ def issue_batch():
         "status_url":     f"/batch/status/{batch_id}",
         "message":        "Certificates hashed and queued for Algorand anchoring",
     })
-
 
 @app.route("/batch/status/<batch_id>", methods=["GET"])
 def batch_status(batch_id):
@@ -218,17 +210,6 @@ def digilocker_callback():
         return jsonify({"error": "Missing request id"}), 400
 
     status = get_request_status(request_id)
-
-    # ── Demo resilience: self-heal if the session was lost ────────────────────
-    # In mock mode the in-memory store is wiped on server restart.  If a valid
-    # request_id arrives at /callback but the session no longer exists (status
-    # "not_found"), we re-create it so the demo flow never stalls.  In
-    # production this branch is unreachable because real Setu sessions are
-    # server-side — remove the `if` block and keep only the 403 guard.
-    if status["status"] == "not_found":
-        from digilocker_service import ensure_mock_session
-        status = ensure_mock_session(request_id)
-
     if status["status"] != "authenticated":
         return jsonify({"error": "User has not consented yet"}), 403
 
@@ -236,7 +217,7 @@ def digilocker_callback():
         "success":    True,
         "request_id": request_id,
         "user":       status["user"],
-        "message":    "Consent received. Call POST /digilocker/verify with this request_id to bind your identity.",
+        "message":    "Consent received. Call /digilocker/bind to create identity anchor, then /digilocker/verify.",
     })
 
 
@@ -365,13 +346,10 @@ def issue():
         return jsonify({"error": "Empty filename"}), 400
 
     doc_type   = request.form.get("doc_type", "academic")
-    cert_number = request.form.get("cert_number")          # optional single-issue
-    issued_to_name = request.form.get("issued_to_name")    # optional
-    issued_to_hash = (
-        hashlib.sha256(issued_to_name.strip().lower().encode()).hexdigest()
-        if issued_to_name
-        else None
-    )
+    cert_number = request.form.get("cert_number")
+
+    # 🔥 CHANGED: use identity_did instead of name hashing
+    identity_did = request.form.get("identity_did") or None
 
     file_bytes = file.read()
     cert_hash  = normalize_and_hash(file_bytes)
@@ -383,13 +361,13 @@ def issue():
         else None
     )
 
-    # FIX: pass institution_id so per-institution key is used
     signature = sign_credential(cert_hash, institution_id=inst_id)
-    result    = anchor_hash(
+
+    result = anchor_hash(
         cert_hash, doc_type, institution, signature,
         institution_id=inst_id,
         cert_number=cert_number,
-        issued_to=issued_to_hash,
+        issued_to=identity_did,   # 🔥 CHANGED
     )
 
     return jsonify({
@@ -415,9 +393,24 @@ def verify():
     if file.filename == "":
         return jsonify({"error": "Empty filename"}), 400
 
+    # 🔥 NEW: accept identity_did for ownership check
+    identity_did = request.form.get("identity_did")
+
     file_bytes = file.read()
     cert_hash  = normalize_and_hash(file_bytes)
-    return jsonify(verify_hash(cert_hash))
+    del file_bytes
+
+    result = verify_hash(cert_hash)
+
+    # 🔥 NEW: enforce identity ownership if provided
+    if identity_did and result.get("success"):
+        issued_to = result.get("issued_to")
+
+        if issued_to and issued_to != identity_did:
+            result["success"] = False
+            result["reason"]  = "Certificate does not belong to this identity"
+
+    return jsonify(result)
 
 
 # ── Registration flow ─────────────────────────────────────────────────────────
