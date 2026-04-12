@@ -7,6 +7,13 @@ from dotenv import load_dotenv
 load_dotenv()
 PINATA_JWT = os.getenv("PINATA_JWT")
 
+# Gateway priority: Pinata (authenticated) → Cloudflare (public) → IPFS.io (public)
+_IPFS_GATEWAYS = [
+    "https://gateway.pinata.cloud/ipfs/{cid}",
+    "https://cloudflare-ipfs.com/ipfs/{cid}",
+    "https://ipfs.io/ipfs/{cid}",
+]
+
 def pin_with_retry(metadata: dict, retries: int = 3) -> str:
     last_error = None
     for attempt in range(retries):
@@ -45,10 +52,20 @@ def pin_certificate_metadata(metadata: dict) -> str:
 
 def fetch_certificate_metadata(cid: str) -> dict:
     """
-    Fetches the metadata JSON from IPFS using the CID.
-    Uses the public Pinata gateway — no auth needed to read.
+    Fetch metadata JSON from IPFS.
+    Tries Pinata gateway first, then Cloudflare, then ipfs.io.
+    Raises RuntimeError only if all gateways fail.
     """
-    url = f"https://gateway.pinata.cloud/ipfs/{cid}"
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
-    return response.json()
+    last_error = None
+    for gateway_template in _IPFS_GATEWAYS:
+        url = gateway_template.format(cid=cid)
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            last_error = exc
+            continue
+    raise RuntimeError(
+        f"IPFS fetch failed across all gateways for cid={cid}: {last_error}"
+    )

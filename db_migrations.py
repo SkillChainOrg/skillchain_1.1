@@ -164,6 +164,22 @@ def run_migrations() -> None:
             ON identity_anchors (identity_did)
         """)
 
+        # ── did_documents ─────────────────────────────────────
+        # Stores W3C DID Documents for DIDs created by SkillChain.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS did_documents (
+                id         SERIAL PRIMARY KEY,
+                did        TEXT UNIQUE NOT NULL,
+                document   JSONB NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_did_documents_did
+            ON did_documents (did)
+        """)
+
         conn.commit()
         log.info("DB migrations completed successfully (PostgreSQL).")
 

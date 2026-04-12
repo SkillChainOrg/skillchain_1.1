@@ -16,11 +16,11 @@ import hmac as hmac_lib
 import json
 import logging
 import os
-import secrets
 import time
 
 from dotenv import load_dotenv
 from algosdk import transaction
+from algosdk.transaction import wait_for_confirmation
 from algosdk.v2client import algod, indexer
 from PIL import Image
 import io
@@ -40,8 +40,9 @@ if not HMAC_SECRET:
         "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
     )
 
-ALGOD_URL     = os.getenv("ALGOD_URL",   "https://testnet-api.algonode.cloud")
-INDEXER_URL   = os.getenv("INDEXER_URL", "https://testnet-idx.algonode.cloud")
+ALGOD_URL              = os.getenv("ALGOD_URL",             "https://testnet-api.algonode.cloud")
+INDEXER_URL            = os.getenv("INDEXER_URL",           "https://testnet-idx.algonode.cloud")
+INDEXER_FALLBACK_URL   = os.getenv("INDEXER_FALLBACK_URL",  "https://algoindexer.testnet.algoexplorer.io")
 ALGOD_TOKEN   = ""
 INDEXER_TOKEN = ""
 
@@ -157,8 +158,46 @@ def get_algod_client():
     return algod.AlgodClient(ALGOD_TOKEN, ALGOD_URL)
 
 
-def get_indexer_client():
-    return indexer.IndexerClient(INDEXER_TOKEN, INDEXER_URL)
+def get_indexer_client(fallback: bool = False):
+    url = INDEXER_FALLBACK_URL if fallback else INDEXER_URL
+    return indexer.IndexerClient(INDEXER_TOKEN, url)
+
+
+# ── tx_id safety guard ────────────────────────────────────────────────────────
+
+def is_valid_txid(tx_id: str) -> bool:
+    """Return True only for plausible real Algorand transaction IDs."""
+    return (
+        isinstance(tx_id, str)
+        and len(tx_id) > 20
+        and tx_id != "DEMO_TX"
+        and not tx_id.startswith("DEMO_TX_")
+    )
+
+
+# ── Indexer call with retry + primary/fallback ─────────────────────────────────
+
+def _txn_from_indexer(tx_id: str, retries: int = 3) -> dict:
+    """
+    Fetch a single transaction from the Algorand indexer.
+    Retries up to `retries` times (2 s delay), then tries the fallback indexer.
+    Returns the transaction dict, or raises on total failure.
+    """
+    last_err = None
+    for attempt in range(retries):
+        try:
+            return get_indexer_client(fallback=False).transaction(tx_id).get("transaction", {})
+        except Exception as exc:
+            last_err = exc
+            if attempt < retries - 1:
+                time.sleep(2)
+
+    # Primary exhausted — try fallback indexer once
+    try:
+        log.warning("Primary indexer failed (%s) — trying fallback.", last_err)
+        return get_indexer_client(fallback=True).transaction(tx_id).get("transaction", {})
+    except Exception as exc:
+        raise RuntimeError(f"Indexer unavailable (primary + fallback): {exc}") from exc
 
 
 # ── HMAC helpers ──────────────────────────────────────────────────────────────
@@ -246,12 +285,10 @@ def anchor_hash(
     )
 
     signed_txn = sign_transaction(txn, institution_id)
-    # Fix #11: blockchain failure fallback
-    try:
-        tx_id = client.send_transaction(signed_txn)
-    except Exception as chain_err:
-        log.warning("Algorand send failed — using DEMO_TX fallback: %s", chain_err)
-        tx_id = f"DEMO_TX_{secrets.token_hex(8).upper()}"
+    # Blockchain failure is fatal — no fake IDs, no silent fallback.
+    # If Algorand is unreachable the caller receives a 500 with a real error.
+    tx_id = client.send_transaction(signed_txn)
+    wait_for_confirmation(client, tx_id, 4)   # raises if not confirmed in 4 rounds
 
     save_to_db(
         cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
@@ -351,28 +388,57 @@ def _verify_full(
     ipfs_cid: str,
 ) -> dict:
     """Full verification against IPFS metadata and Algorand transaction.
-    FIX A: param removed — always recomputed fresh from cert_hash
-    + server-side HMAC_SECRET, then cross-checked against IPFS metadata.
+    Never raises — all failures return a safe JSON-serialisable dict.
     """
-    client  = get_indexer_client()
-    txn_obj = client.transaction(tx_id).get("transaction", {})
-    note_raw = txn_obj.get("note", "")
+    # Guard: reject obviously fake / empty tx IDs before hitting the indexer.
+    if not is_valid_txid(tx_id):
+        return {
+            "verified":        False,
+            "chain_confirmed": False,
+            "error":           "Invalid transaction ID — cannot verify on-chain.",
+        }
 
+    # ── Indexer lookup (retry + fallback) ─────────────────────────────────
+    try:
+        txn_obj = _txn_from_indexer(tx_id)
+    except Exception as exc:
+        log.error("Indexer lookup failed for tx_id=%s: %s", tx_id, exc)
+        return {
+            "verified":        False,
+            "chain_confirmed": False,
+            "error":           "Blockchain lookup failed",
+        }
+
+    if not txn_obj:
+        return {
+            "verified":        False,
+            "chain_confirmed": False,
+            "error":           "Transaction not found on-chain",
+        }
+
+    note_raw = txn_obj.get("note", "")
     try:
         note = json.loads(base64.b64decode(note_raw).decode())
     except Exception:
         return {"valid": False, "reason": "Malformed transaction note"}
 
     ipfs_cid_from_note = note.get("cid") or ipfs_cid
-    meta = fetch_certificate_metadata(ipfs_cid_from_note)
+
+    # ── IPFS fetch ─────────────────────────────────────────────────────────
+    try:
+        meta = fetch_certificate_metadata(ipfs_cid_from_note)
+    except Exception as exc:
+        log.error("IPFS fetch failed for cid=%s: %s", ipfs_cid_from_note, exc)
+        return {
+            "verified":        False,
+            "chain_confirmed": bool(txn_obj.get("confirmed-round")),
+            "error":           "IPFS metadata unavailable",
+        }
 
     if meta.get("cert_hash") != cert_hash:
         return {"valid": False, "reason": "IPFS hash mismatch — data tampered"}
 
     # ── HMAC tamper-evidence check ─────────────────────────────────────────
-    # FIX A: Recompute HMAC fresh from cert_hash + server secret.
-    # Compare only against the value embedded in IPFS metadata.
-    # This confirms IPFS payload hasn't been tampered with since issuance.
     recomputed = generate_hmac(cert_hash)
     ipfs_hmac  = meta.get("hmac_value", "")
     hmac_ok    = bool(ipfs_hmac and hmac_lib.compare_digest(recomputed, ipfs_hmac))
@@ -411,8 +477,8 @@ def _verify_full(
         sender_address, cert_hash, meta.get("signature", "")
     )
 
-    sig_valid   = provenance.get("verified") or False
-    trust       = compute_trust_score(
+    sig_valid = provenance.get("verified") or False
+    trust     = compute_trust_score(
         chain_confirmed=bool(txn_obj.get("confirmed-round")),
         hmac_ok=hmac_ok,
         signature_valid=bool(sig_valid),
@@ -434,7 +500,6 @@ def _verify_full(
         "ipfs_cid":         ipfs_cid_from_note,
         "ipfs_url":         f"https://gateway.pinata.cloud/ipfs/{ipfs_cid_from_note}",
         "explorer_url":     f"https://testnet.explorer.perawallet.app/tx/{txn_obj['id']}",
-        # FIX C: Trust score — composite 0-100 from on-chain + IPFS + sig + revocation signals
         "trust_score":      trust["score"],
         "trust_grade":      trust["grade"],
         "trust_factors":    trust["factors"],
@@ -443,12 +508,20 @@ def _verify_full(
 
 def _verify_via_indexer(cert_hash: str) -> dict:
     """Fallback: scan Algorand indexer when cert is not in local DB."""
-    client  = get_indexer_client()
     address = get_issuer_address()
     try:
-        txns = client.search_transactions(
-            address=address, note_prefix=b'{"sc":'
-        ).get("transactions", [])
+        client = get_indexer_client(fallback=False)
+        try:
+            txns = client.search_transactions(
+                address=address, note_prefix=b'{"sc":'
+            ).get("transactions", [])
+        except Exception:
+            # Primary failed — try fallback indexer
+            log.warning("_verify_via_indexer: primary indexer failed, trying fallback.")
+            client = get_indexer_client(fallback=True)
+            txns = client.search_transactions(
+                address=address, note_prefix=b'{"sc":'
+            ).get("transactions", [])
 
         for txn in txns:
             note_raw = txn.get("note", "")
@@ -506,9 +579,8 @@ def verify_by_cert_number(
 
     stored_cert_hash = row["cert_hash"]
     tx_id            = row["tx_id"]
-    hmac_value       = row["hmac_value"]
     ipfs_cid         = row["ipfs_cid"]
-    issued_to        = row["issued_to"]
+    issued_to        = row.get("issued_to")
 
     # Guard: only do image-match when a hash was actually submitted.
     # An empty string will never match a SHA-256 hash, so we check explicitly.
@@ -519,7 +591,7 @@ def verify_by_cert_number(
             "detail": "The submitted file has been modified or is not the original",
         }
 
-    result = _verify_full(stored_cert_hash, tx_id, ipfs_cid, hmac_value)
+    result = _verify_full(stored_cert_hash, tx_id, ipfs_cid)
     if not result.get("valid"):
         return result
 

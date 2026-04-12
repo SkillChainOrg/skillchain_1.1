@@ -435,12 +435,17 @@ def issue():
 
     # FIX: pass institution_id so per-institution key is used
     signature = sign_credential(cert_hash, institution_id=inst_id)
-    result    = anchor_hash(
-        cert_hash, doc_type, institution, signature,
-        institution_id=inst_id,
-        cert_number=cert_number,
-        issued_to=issued_to_hash,
-    )
+
+    try:
+        result = anchor_hash(
+            cert_hash, doc_type, institution, signature,
+            institution_id=inst_id,
+            cert_number=cert_number,
+            issued_to=issued_to_hash,
+        )
+    except Exception as exc:
+        log.error("anchor_hash failed: %s", exc)
+        return jsonify({"error": "Blockchain anchoring failed", "detail": str(exc)}), 503
 
     return jsonify({
         "success":        True,
@@ -465,9 +470,24 @@ def verify():
     if file.filename == "":
         return jsonify({"error": "Empty filename"}), 400
 
-    file_bytes = file.read()
-    cert_hash  = normalize_and_hash(file_bytes)
-    return jsonify(verify_hash(cert_hash))
+    try:
+        file_bytes = file.read()
+        cert_hash  = normalize_and_hash(file_bytes)
+    except Exception as exc:
+        log.error("Image normalisation failed: %s", exc)
+        return jsonify({"error": "Could not process uploaded file", "detail": str(exc)}), 422
+
+    try:
+        result = verify_hash(cert_hash)
+    except Exception as exc:
+        log.error("verify_hash raised unexpectedly: %s", exc)
+        return jsonify({
+            "verified":        False,
+            "chain_confirmed": False,
+            "error":           "Verification service temporarily unavailable",
+        }), 503
+
+    return jsonify(result)
 
 
 # ── Registration flow ─────────────────────────────────────────────────────────
