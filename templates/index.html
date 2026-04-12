@@ -94,6 +94,22 @@
     .trust-badge.ipfs { background: #faeeda; color: #854f0b; }
     .trust-badge.did  { background: #fef2f2; color: #a32d2d; }
 
+    /* FIX C: Trust Score meter */
+    .trust-score-wrap { display: flex; align-items: center; gap: 12px; margin: 14px 0 4px; }
+    .trust-meter { flex: 1; height: 8px; background: #e5e5e5; border-radius: 99px; overflow: hidden; }
+    .trust-bar   { height: 100%; border-radius: 99px; transition: width .4s ease; }
+    .trust-bar.A { background: var(--green); }
+    .trust-bar.B { background: #2563eb; }
+    .trust-bar.C { background: var(--amber); }
+    .trust-bar.D { background: #d97706; }
+    .trust-bar.F { background: var(--red); }
+    .trust-score-label { font-size: 20px; font-weight: 700; min-width: 42px; text-align: right; }
+    .trust-score-label.A { color: var(--green); }
+    .trust-score-label.B { color: #2563eb; }
+    .trust-score-label.C { color: var(--amber); }
+    .trust-score-label.D { color: #d97706; }
+    .trust-score-label.F { color: var(--red); }
+
     .check-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgba(0,0,0,.06); font-size: 13px; }
     .check-row:last-child { border-bottom: none; }
     .check-icon { font-size: 14px; min-width: 18px; }
@@ -485,9 +501,20 @@ function showVerifyResult(data) {
 
   if (data.valid) {
     verdict.className = 'verdict valid';
+    // FIX C: Render trust score meter in verdict
+    const ts    = data.trust_score !== undefined ? data.trust_score : null;
+    const tg    = data.trust_grade || '';
+    const tsRow = ts !== null ? `
+      <div class="trust-score-wrap" style="max-width:240px;margin:12px auto 4px">
+        <div class="trust-meter"><div class="trust-bar ${tg}" style="width:${ts}%"></div></div>
+        <div class="trust-score-label ${tg}">${ts}</div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Trust Score (${tg})</div>
+    ` : '';
     verdict.innerHTML = `
       <div class="verdict-icon">&#9989;</div>
       <div class="verdict-label ok">VALID CERTIFICATE</div>
+      ${tsRow}
       <div class="verdict-sub">Cryptographically verified on Algorand blockchain</div>
       <div class="trust-layer">
         <span class="trust-badge sig">&#128274; Cryptographically signed</span>

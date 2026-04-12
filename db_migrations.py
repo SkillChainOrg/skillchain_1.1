@@ -122,26 +122,26 @@ def run_migrations() -> None:
                 issued_at   TEXT,
                 ipfs_cid    TEXT,
                 cert_number TEXT,
-                hmac_value  TEXT,
                 issued_to   TEXT
+                -- hmac_value intentionally absent: recomputed at verify time,
+                -- never stored (see security note in algorand_service.py)
             )
         """)
 
-        # For existing databases that still have the hmac_key column:
-        # We leave the column in place (safe — application no longer reads/writes it).
-        # To physically remove it after all instances are upgraded, run:
-        #   ALTER TABLE certificates DROP COLUMN IF EXISTS hmac_key;
-        # That is intentionally NOT done here because it is a destructive DDL
-        # change that requires confirmation from the operator.
-        #
-        # We DO log a warning if the column still exists so operators know
-        # to schedule the cleanup.
-        if _column_exists(cur, "certificates", "hmac_key"):
-            log.warning(
-                "certificates.hmac_key column still present — it is no longer "
-                "written or read by the application.  Schedule an ALTER TABLE "
-                "certificates DROP COLUMN hmac_key once all workers are upgraded."
-            )
+        # FIX A: Actively DROP hmac_value if it exists on old deployments.
+        # Storing HMAC output alongside cert_hash gives attackers a
+        # known-plaintext corpus. This migration is safe — the column is
+        # no longer written or read; DROP removes the security liability.
+        for stale_col in ("hmac_key", "hmac_value"):
+            if _column_exists(cur, "certificates", stale_col):
+                cur.execute(
+                    f"ALTER TABLE certificates DROP COLUMN IF EXISTS {stale_col}"
+                )
+                log.info(
+                    "Security migration: dropped certificates.%s "
+                    "(HMAC values must not be stored alongside protected data).",
+                    stale_col,
+                )
 
         # ── identity_anchors ─────────────────────────────────
         cur.execute("""

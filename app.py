@@ -72,7 +72,15 @@ limiter = Limiter(
     default_limits=["100 per day"],
 )
 
-ADMIN_KEY = os.getenv("ADMIN_KEY", "skillchain-admin-secret")
+# FIX B: No fallback. If ADMIN_KEY is missing, fail loudly at startup.
+# A hardcoded default becomes the first thing an attacker tries.
+ADMIN_KEY = os.getenv("ADMIN_KEY")
+if not ADMIN_KEY:
+    raise RuntimeError(
+        "ADMIN_KEY environment variable is not set.\n"
+        "Generate one: python -c \"import secrets; print(secrets.token_hex(32))\"\n"
+        "Then set it in Railway → Variables (or your .env file)."
+    )
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 db_migrations.run_migrations()   # creates/alters all tables first
@@ -439,7 +447,7 @@ def issue():
         "cert_hash":      cert_hash,
         "tx_id":          result["tx_id"],
         "ipfs_cid":       result.get("ipfs_cid"),
-        "hmac_value":     result.get("hmac_value"),
+        # hmac_value removed from response (FIX A — internal integrity check only)
         "wallet_version": result.get("wallet_version", 1),
         "issued_by":      institution["institution"],
         "did":            institution.get("did", ""),

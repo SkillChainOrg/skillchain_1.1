@@ -61,8 +61,10 @@ def init_db():
                 issued_at   TEXT,
                 ipfs_cid    TEXT,
                 cert_number TEXT,
-                hmac_value  TEXT,
                 issued_to   TEXT
+                /* hmac_value NOT stored: HMAC recomputed on-demand from cert_hash+secret.
+                   Storing it alongside the data it protects creates a known-plaintext
+                   corpus. Value lives only in IPFS metadata, guarding against IPFS tampering. */
             )
         """)
         conn.commit()
@@ -78,9 +80,9 @@ def save_to_db(
     issued_at: str,
     ipfs_cid: str | None = None,
     cert_number: str | None = None,
-    hmac_value: str | None = None,
     issued_to: str | None = None,
 ) -> None:
+    # FIX A: hmac_value not stored in DB (see schema comment above)
     conn = get_db_connection()
     cur  = conn.cursor()
     try:
@@ -88,19 +90,18 @@ def save_to_db(
             """
             INSERT INTO certificates
                 (cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
-                 cert_number, hmac_value, issued_to)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                 cert_number, issued_to)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (cert_hash) DO UPDATE SET
                 tx_id       = EXCLUDED.tx_id,
                 doc_type    = EXCLUDED.doc_type,
                 issued_at   = EXCLUDED.issued_at,
                 ipfs_cid    = EXCLUDED.ipfs_cid,
                 cert_number = EXCLUDED.cert_number,
-                hmac_value  = EXCLUDED.hmac_value,
                 issued_to   = EXCLUDED.issued_to
             """,
             (cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
-             cert_number, hmac_value, issued_to),
+             cert_number, issued_to),
         )
         conn.commit()
     finally:
@@ -109,13 +110,15 @@ def save_to_db(
 
 
 def lookup_hash(cert_hash: str) -> dict | None:
-    """Return dict with tx_id, hmac_value, cert_number, ipfs_cid — or None."""
+    """Return dict with tx_id, cert_number, ipfs_cid — or None.
+    hmac_value not stored — recomputed at verify time.
+    """
     conn = get_db_connection()
     cur  = dict_cursor(conn)
     try:
         cur.execute(
             """
-            SELECT tx_id, hmac_value, cert_number, ipfs_cid
+            SELECT tx_id, cert_number, ipfs_cid
             FROM certificates WHERE cert_hash = %s
             """,
             (cert_hash,),
@@ -128,13 +131,15 @@ def lookup_hash(cert_hash: str) -> dict | None:
 
 
 def lookup_by_cert_number(cert_number: str) -> dict | None:
-    """Return dict with cert_hash, tx_id, hmac_value, ipfs_cid, issued_to — or None."""
+    """Return dict with cert_hash, tx_id, ipfs_cid, issued_to — or None.
+    hmac_value not stored — recomputed at verify time.
+    """
     conn = get_db_connection()
     cur  = dict_cursor(conn)
     try:
         cur.execute(
             """
-            SELECT cert_hash, tx_id, hmac_value, ipfs_cid, issued_to
+            SELECT cert_hash, tx_id, ipfs_cid, issued_to
             FROM certificates WHERE cert_number = %s
             """,
             (cert_number,),
@@ -251,7 +256,7 @@ def anchor_hash(
     save_to_db(
         cert_hash, tx_id, doc_type, issued_at, ipfs_cid,
         cert_number=cert_number,
-        hmac_value=hmac_value,
+        # FIX A: hmac_value NOT saved to DB — lives in IPFS metadata only
         issued_to=issued_to,
     )
 
@@ -259,8 +264,61 @@ def anchor_hash(
         "tx_id":          tx_id,
         "ipfs_cid":       ipfs_cid,
         "wallet_version": wallet_version,
-        "hmac_value":     hmac_value,
+        # FIX A: hmac_value removed from API response — internal only
     }
+
+
+
+# ── Trust Score ───────────────────────────────────────────────────────────────
+
+def compute_trust_score(
+    chain_confirmed: bool,
+    hmac_ok: bool,
+    signature_valid: bool,
+    issuer_active: bool,
+    wallet_version: int = 1,
+) -> dict:
+    """
+    Compute a 0-100 composite trust score for a verified credential.
+
+    Weights are intentionally not equal — chain confirmation is the
+    foundational signal; HMAC and signature confirm data integrity and
+    issuer provenance respectively; issuer_active checks revocation.
+
+    wallet_version 2 (per-institution Vault key) earns a +5 bonus because
+    it means the signing key is unique to the institution, reducing blast
+    radius if any single key is compromised. Capped at 100.
+
+    Returns:
+        {
+          "score":    int (0–100),
+          "grade":    str ("A" / "B" / "C" / "D" / "F"),
+          "factors":  dict of individual signal contributions,
+        }
+    """
+    weights = {
+        "chain_confirmed": 35,
+        "hmac_ok":         25,
+        "signature_valid": 25,
+        "issuer_active":   15,
+    }
+    signals = {
+        "chain_confirmed": chain_confirmed,
+        "hmac_ok":         hmac_ok,
+        "signature_valid": signature_valid,
+        "issuer_active":   issuer_active,
+    }
+    factors = {k: weights[k] if v else 0 for k, v in signals.items()}
+    raw     = sum(factors.values())
+
+    # Per-institution key bonus — reduces systemic key-compromise risk
+    if wallet_version >= 2:
+        factors["per_institution_key_bonus"] = 5
+    raw = min(100, raw + factors.get("per_institution_key_bonus", 0))
+
+    grade = "A" if raw >= 90 else "B" if raw >= 75 else "C" if raw >= 60 else "D" if raw >= 40 else "F"
+
+    return {"score": raw, "grade": grade, "factors": factors}
 
 
 # ── Core: verify a certificate hash ──────────────────────────────────────────
@@ -282,7 +340,7 @@ def verify_hash(cert_hash: str) -> dict:
             cert_hash,
             row["tx_id"],
             row["ipfs_cid"],
-            row["hmac_value"],
+            # FIX A: hmac_value not fetched from DB — _verify_full recomputes it
         )
     return _verify_via_indexer(cert_hash)
 
@@ -291,9 +349,11 @@ def _verify_full(
     cert_hash: str,
     tx_id: str,
     ipfs_cid: str,
-    stored_hmac_value: str | None,
 ) -> dict:
-    """Full verification against IPFS metadata and Algorand transaction."""
+    """Full verification against IPFS metadata and Algorand transaction.
+    FIX A: param removed — always recomputed fresh from cert_hash
+    + server-side HMAC_SECRET, then cross-checked against IPFS metadata.
+    """
     client  = get_indexer_client()
     txn_obj = client.transaction(tx_id).get("transaction", {})
     note_raw = txn_obj.get("note", "")
@@ -310,16 +370,12 @@ def _verify_full(
         return {"valid": False, "reason": "IPFS hash mismatch — data tampered"}
 
     # ── HMAC tamper-evidence check ─────────────────────────────────────────
-    # Always recompute from the stored cert_hash using the server-side secret.
-    # Never trust user-submitted values for this comparison.
-    hmac_ok = False
-    if stored_hmac_value:
-        recomputed = generate_hmac(cert_hash)
-        ipfs_hmac  = meta.get("hmac_value", "")
-        hmac_ok    = (
-            hmac_lib.compare_digest(recomputed, stored_hmac_value)
-            and hmac_lib.compare_digest(recomputed, ipfs_hmac)
-        )
+    # FIX A: Recompute HMAC fresh from cert_hash + server secret.
+    # Compare only against the value embedded in IPFS metadata.
+    # This confirms IPFS payload hasn't been tampered with since issuance.
+    recomputed = generate_hmac(cert_hash)
+    ipfs_hmac  = meta.get("hmac_value", "")
+    hmac_ok    = bool(ipfs_hmac and hmac_lib.compare_digest(recomputed, ipfs_hmac))
 
     # ── Revocation check (PostgreSQL) ──────────────────────────────────────
     sender_address = txn_obj.get("sender", "")
@@ -355,10 +411,18 @@ def _verify_full(
         sender_address, cert_hash, meta.get("signature", "")
     )
 
+    sig_valid   = provenance.get("verified") or False
+    trust       = compute_trust_score(
+        chain_confirmed=bool(txn_obj.get("confirmed-round")),
+        hmac_ok=hmac_ok,
+        signature_valid=bool(sig_valid),
+        issuer_active=not bool(reg_row and reg_row.get("revoked")),
+        wallet_version=wallet_version,
+    )
     return {
         "valid":            True,
         "hmac_valid":       hmac_ok,
-        "signature_valid":  provenance.get("verified"),
+        "signature_valid":  sig_valid,
         "wallet_version":   wallet_version,
         "tx_id":            txn_obj["id"],
         "confirmed_round":  txn_obj["confirmed-round"],
@@ -370,6 +434,10 @@ def _verify_full(
         "ipfs_cid":         ipfs_cid_from_note,
         "ipfs_url":         f"https://gateway.pinata.cloud/ipfs/{ipfs_cid_from_note}",
         "explorer_url":     f"https://testnet.explorer.perawallet.app/tx/{txn_obj['id']}",
+        # FIX C: Trust score — composite 0-100 from on-chain + IPFS + sig + revocation signals
+        "trust_score":      trust["score"],
+        "trust_grade":      trust["grade"],
+        "trust_factors":    trust["factors"],
     }
 
 
