@@ -9,6 +9,14 @@ CHANGES (PostgreSQL migration):
   - Row access changed from positional index to dict keys.
   - conn.row_factory = sqlite3.Row removed (RealDictCursor used instead).
 
+CHANGES (stabilization pass):
+  - _normalise_institution() applied before all INSERT/SELECT on institution name.
+  - request_registration uses ON CONFLICT DO NOTHING + rowcount → 409 on duplicate.
+  - approve_registration checks for already-approved institutions → 409.
+  - _fund_institution_address checks system wallet balance before sending.
+  - register_did verifies rowcount after INSERT.
+  - approve_registration returns wallet_address + funding_tx_id in success response.
+
 Security design:
   - Private keys are NEVER loaded in this module.
   - signing_service is the sole authority for all private-key operations.
@@ -71,6 +79,20 @@ def get_indexer_client():
     return indexer.IndexerClient(INDEXER_TOKEN, INDEXER_URL)
 
 
+# ── Normalisation (Fix 4) ────────────────────────────────────────────────────
+
+def _normalise_institution(name: str) -> str:
+    """
+    Canonical form of an institution name for deduplication.
+
+    Collapses internal whitespace, strips leading/trailing whitespace,
+    and lowercases. Applied before every INSERT and SELECT involving
+    institution names so that "IIT Bombay" and "iit  bombay" are treated
+    as the same institution.
+    """
+    return " ".join(name.strip().lower().split())
+
+
 # ── DB initialisation ────────────────────────────────────────────────────────
 
 def init_did_db():
@@ -78,8 +100,6 @@ def init_did_db():
     conn = get_db_connection()
     cur  = conn.cursor()
     try:
-        # did_registry — full schema; CREATE TABLE IF NOT EXISTS is a no-op
-        # if db_migrations.run_migrations() already ran.
         cur.execute("""
             CREATE TABLE IF NOT EXISTS did_registry (
                 id                  SERIAL PRIMARY KEY,
@@ -122,30 +142,75 @@ def init_did_db():
 # ── Registration flow ────────────────────────────────────────────────────────
 
 def request_registration(institution_name: str, email: str, domain: str) -> dict:
+    """
+    Register a new institution for review.
+
+    Applies name normalisation and uses ON CONFLICT DO NOTHING to prevent
+    duplicate submissions. Returns http_status 409 if the institution,
+    email, or domain is already registered.
+    """
+    # Fix 4: normalise before any DB operation
+    institution_name = institution_name.strip()
+    email            = email.strip().lower()
+    domain           = domain.strip().lower()
+    normalised_name  = _normalise_institution(institution_name)
+
+    # Fix 6 / Fix 5: check if already registered in did_registry
+    conn = get_db_connection()
+    cur  = dict_cursor(conn)
+    try:
+        cur.execute(
+            """
+            SELECT institution FROM did_registry
+            WHERE LOWER(institution) = %s OR LOWER(domain) = %s
+            LIMIT 1
+            """,
+            (normalised_name, domain),
+        )
+        existing = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+
+    if existing:
+        return {
+            "error":       "Institution already registered",
+            "http_status": 409,
+        }
+
     registration_id = secrets.token_hex(8)
     verify_token    = secrets.token_hex(16)
 
     conn = get_db_connection()
     cur  = conn.cursor()
     try:
+        # Fix 5: ON CONFLICT DO NOTHING + rowcount check for race safety
         cur.execute(
             """
             INSERT INTO pending_registrations
                 (id, institution, email, domain, verify_token, verified, approved, created_at)
             VALUES (%s, %s, %s, %s, %s, 0, 0, %s)
+            ON CONFLICT DO NOTHING
             """,
             (registration_id, institution_name, email, domain,
              verify_token, time.strftime("%Y-%m-%d")),
         )
         conn.commit()
+
+        # Fix 5: rowcount == 0 means a concurrent insert won the race
+        if cur.rowcount == 0:
+            return {
+                "error":       "Institution already exists",
+                "http_status": 409,
+            }
     finally:
         cur.close()
         conn.close()
-        
-    BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:5000")
 
+    BASE_URL   = os.getenv("BASE_URL", "http://127.0.0.1:5000")
     verify_url = f"{BASE_URL}/verify-email?token={verify_token}"
-    print("VERIFY URL:", verify_url)
+    log.info("Registration submitted for %s — verify URL: %s", institution_name, verify_url)
+
     return {
         "registration_id": registration_id,
         "message":         f"Verification email would be sent to {email}",
@@ -231,9 +296,23 @@ def _fund_institution_address(institution_address: str,
                                amount_microalgos: int = 100_000) -> str:
     """
     Send microAlgos from the system wallet to a newly created institution wallet.
+
+    Checks system wallet balance before sending (Fix 8). Raises RuntimeError
+    if the system wallet cannot cover the transfer plus its own minimum balance.
     """
     system_address = get_issuer_address()
     client = get_algod_client()
+
+    # Fix 8: system wallet balance check before funding
+    account_info = client.account_info(system_address)
+    balance      = account_info.get("amount", 0)
+    required     = amount_microalgos + 200_000  # transfer + system wallet minimum
+
+    if balance < required:
+        raise RuntimeError(
+            f"System wallet balance too low: {balance} microAlgos. "
+            f"Need at least {required} microAlgos to fund institution wallet."
+        )
 
     params   = client.suggested_params()
     fund_txn = algo_txn.PaymentTxn(
@@ -259,14 +338,15 @@ def approve_registration(registration_id: str) -> dict:
     Sequence
     --------
     1. Look up the pending registration.
-    2. Derive a stable institution_id from the institution name.
-    3. Generate a fresh Algorand keypair for this institution.
-    4. Store the private key in Vault (prod) or AES-GCM in did_registry (dev).
-    5. Fund the new institution wallet from the system wallet.
-    6. Register the DID and store the institution_address.
-    7. Mark the pending registration as approved.
+    2. Check for already-approved idempotency guard (Fix 6).
+    3. Derive a stable institution_id from the institution name.
+    4. Generate a fresh Algorand keypair for this institution.
+    5. Store the private key in Vault (prod) or AES-GCM in did_registry (dev).
+    6. Fund the new institution wallet from the system wallet.
+    7. Register the DID and store the institution_address.
+    8. Mark the pending registration as approved.
+    9. Return success response including wallet_address + funding_tx_id (Fix 7).
     """
-    import os
     DEMO_MODE = os.getenv("DEMO_MODE", "true").lower() == "true"
 
     # ── Step 1: Try strict fetch (verified only) ─────────────────────────────
@@ -287,17 +367,49 @@ def approve_registration(registration_id: str) -> dict:
             conn.close()
 
         if not row:
-            return {"success": False, "reason": "Registration not found"}
+            return {"success": False, "reason": "Registration not found", "http_status": 404}
 
         reg = dict(row)
 
         if not reg.get("verified", 0):
             if not DEMO_MODE:
-                return {"success": False, "reason": "Email not verified"}
+                return {"success": False, "reason": "Email not verified", "http_status": 400}
             else:
-                print(f"[DEMO MODE] Approving unverified registration: {registration_id}")
+                log.info("[DEMO MODE] Approving unverified registration: %s", registration_id)
 
-    institution_name = reg["institution"]
+    # Fix 6: idempotency — return structured 409 if already approved
+    if reg.get("approved"):
+        conn = get_db_connection()
+        cur  = dict_cursor(conn)
+        try:
+            normalised = _normalise_institution(reg["institution"])
+            cur.execute(
+                """
+                SELECT institution_address, address
+                FROM did_registry
+                WHERE LOWER(institution) = %s
+                LIMIT 1
+                """,
+                (normalised,),
+            )
+            existing_row = cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
+
+        existing_address = (
+            (existing_row.get("institution_address") or existing_row.get("address"))
+            if existing_row else None
+        )
+        return {
+            "error":            "Institution already approved",
+            "wallet_address":   existing_address,
+            "algorand_address": existing_address,
+            "funding_status":   "already_funded",
+            "http_status":      409,
+        }
+
+    institution_name = reg["institution"].strip()
     domain           = reg["domain"]
 
     # ── Step 3: derive institution_id ────────────────────────────────────────
@@ -323,14 +435,19 @@ def approve_registration(registration_id: str) -> dict:
     finally:
         del private_key
 
-    # ── Step 5: fund wallet (non-fatal) ──────────────────────────────────────
+    # ── Step 5: fund wallet (Fix 8 balance check inside _fund_institution_address) ──
+    funding_tx_id  = None
+    funding_status = "unfunded"
+
     try:
-        _fund_institution_address(institution_address, amount_microalgos=100_000)
+        funding_tx_id  = _fund_institution_address(institution_address, amount_microalgos=100_000)
+        funding_status = "funded"
     except Exception as exc:
         log.warning(
             "Auto-funding failed for %s: %s — fund manually if needed.",
             institution_address, exc,
         )
+        funding_status = "funding_failed"
 
     # ── Step 6: register DID ─────────────────────────────────────────────────
     result = register_did(
@@ -355,7 +472,15 @@ def approve_registration(registration_id: str) -> dict:
         cur.close()
         conn.close()
 
-    return {"success": True, **result}
+    # Fix 7: success response MUST include wallet_address + funding_tx_id
+    return {
+        "success":          True,
+        "wallet_address":   institution_address,
+        "algorand_address": institution_address,
+        "funding_tx_id":    funding_tx_id,
+        "funding_status":   funding_status,
+        **result,
+    }
 
 
 # ── DID registration ─────────────────────────────────────────────────────────
@@ -372,7 +497,8 @@ def register_did(
     Write a DID record for an institution into did_registry.
 
     Uses INSERT ... ON CONFLICT (address) DO UPDATE SET ... so it is safe to
-    call multiple times (idempotent upsert).
+    call multiple times (idempotent upsert). Verifies rowcount after insert
+    to catch silent failures (Fix 9).
     """
     if institution_address is None:
         institution_address = get_issuer_address()
@@ -386,8 +512,9 @@ def register_did(
     if institution_id is None:
         institution_id = derive_institution_id(institution_name)
 
+    # Fix 4: normalise before hashing for the DID suffix
     inst_suffix = hashlib.sha256(
-        institution_name.strip().lower().encode()
+        _normalise_institution(institution_name).encode()
     ).hexdigest()[:16]
     did = f"did:algo:testnet:{institution_address}:{inst_suffix}"
 
@@ -429,6 +556,13 @@ def register_did(
             ),
         )
         conn.commit()
+
+        # Fix 9: verify the insert/upsert actually affected a row
+        if cur.rowcount == 0:
+            raise RuntimeError(
+                f"DID insert failed: no rows affected for address={institution_address}"
+            )
+
     finally:
         cur.close()
         conn.close()

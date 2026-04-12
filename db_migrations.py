@@ -3,17 +3,9 @@ db_migrations.py — Idempotent schema migrations for SkillChain (PostgreSQL).
 
 SCHEMA CHANGES (this revision):
   1. certificates.hmac_key column dropped.
-     HMAC keys are now derived at runtime from HMAC_MASTER_KEY env var.
-     They must never be stored alongside the HMAC value they protect.
-     Existing rows retain the column value until the column is dropped by a
-     DBA (safe — the column is no longer read or written by the application).
-
-  2. certificates.issued_to semantics changed.
-     Was: SHA-256(name.strip().lower()) — a name hash with collision risk.
-     Now: identity_did (did:skillchain:identity:...)  — a unique, unforgeable DID.
-     The column type is unchanged (TEXT); only the content semantics differ.
-     Existing rows with old name-hashes remain readable but will not match
-     DID-based verification — this is intentional (they predate identity binding).
+  2. certificates.issued_to semantics changed to identity_did.
+  3. Unique indexes added for idempotency (case-insensitive) on
+     pending_registrations and did_registry (Fix 1).
 """
 
 import logging
@@ -44,7 +36,6 @@ def run_migrations() -> None:
     cur  = conn.cursor()
 
     try:
-        # Prevent race condition across multiple workers
         cur.execute("SELECT pg_advisory_lock(123456789);")
 
         # ── did_registry ─────────────────────────────────────
@@ -112,8 +103,6 @@ def run_migrations() -> None:
         """)
 
         # ── certificates ─────────────────────────────────────
-        # hmac_key is intentionally absent from CREATE TABLE.
-        # issued_to stores identity_did (not hash(name)) for new rows.
         cur.execute("""
             CREATE TABLE IF NOT EXISTS certificates (
                 cert_hash   TEXT PRIMARY KEY,
@@ -123,24 +112,16 @@ def run_migrations() -> None:
                 ipfs_cid    TEXT,
                 cert_number TEXT,
                 issued_to   TEXT
-                -- hmac_value intentionally absent: recomputed at verify time,
-                -- never stored (see security note in algorand_service.py)
             )
         """)
 
-        # FIX A: Actively DROP hmac_value if it exists on old deployments.
-        # Storing HMAC output alongside cert_hash gives attackers a
-        # known-plaintext corpus. This migration is safe — the column is
-        # no longer written or read; DROP removes the security liability.
         for stale_col in ("hmac_key", "hmac_value"):
             if _column_exists(cur, "certificates", stale_col):
                 cur.execute(
                     f"ALTER TABLE certificates DROP COLUMN IF EXISTS {stale_col}"
                 )
                 log.info(
-                    "Security migration: dropped certificates.%s "
-                    "(HMAC values must not be stored alongside protected data).",
-                    stale_col,
+                    "Security migration: dropped certificates.%s", stale_col,
                 )
 
         # ── identity_anchors ─────────────────────────────────
@@ -164,20 +145,33 @@ def run_migrations() -> None:
             ON identity_anchors (identity_did)
         """)
 
-        # ── did_documents ─────────────────────────────────────
-        # Stores W3C DID Documents for DIDs created by SkillChain.
+        # ── Fix 1: Unique indexes for idempotency (case-insensitive) ─────────
+        # Prevents duplicate institutions from being registered under different
+        # capitalisation or minor variations of the same name / email / domain.
+
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS did_documents (
-                id         SERIAL PRIMARY KEY,
-                did        TEXT UNIQUE NOT NULL,
-                document   JSONB NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+            CREATE UNIQUE INDEX IF NOT EXISTS uidx_pending_email
+            ON pending_registrations (LOWER(email))
         """)
 
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_did_documents_did
-            ON did_documents (did)
+            CREATE UNIQUE INDEX IF NOT EXISTS uidx_pending_domain
+            ON pending_registrations (LOWER(domain))
+        """)
+
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uidx_pending_institution
+            ON pending_registrations (LOWER(institution))
+        """)
+
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uidx_did_reg_institution
+            ON did_registry (LOWER(institution))
+        """)
+
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uidx_did_reg_domain
+            ON did_registry (LOWER(domain))
         """)
 
         conn.commit()
