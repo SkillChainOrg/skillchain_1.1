@@ -23,7 +23,8 @@ CHANGES (demo-hardening pass):
   - /request-registration rewrites verify_url to use request.url_root so the link
     works on Railway/Render/localhost without hardcoding.
 """
-
+from dotenv import load_dotenv
+load_dotenv()
 import hashlib
 import io
 import logging
