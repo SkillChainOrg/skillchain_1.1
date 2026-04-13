@@ -17,6 +17,11 @@ CHANGES (stabilization pass):
   - register_did verifies rowcount after INSERT.
   - approve_registration returns wallet_address + funding_tx_id in success response.
 
+CHANGES (security pass):
+  - API keys are SHA-256 hashed before being stored in did_registry.
+  - validate_api_key hashes the incoming key before DB lookup.
+  - Plaintext key is returned once to the caller (at registration time) and never stored.
+
 Security design:
   - Private keys are NEVER loaded in this module.
   - signing_service is the sole authority for all private-key operations.
@@ -69,6 +74,11 @@ INDEXER_TOKEN = ""
 
 def generate_api_key() -> str:
     return secrets.token_hex(32)
+
+
+def _hash_api_key(api_key: str) -> str:
+    """Return SHA-256 hex digest of an API key. Used before every DB read/write."""
+    return hashlib.sha256(api_key.encode()).hexdigest()
 
 
 def get_algod_client():
@@ -499,6 +509,9 @@ def register_did(
     Uses INSERT ... ON CONFLICT (address) DO UPDATE SET ... so it is safe to
     call multiple times (idempotent upsert). Verifies rowcount after insert
     to catch silent failures (Fix 9).
+
+    The API key is SHA-256 hashed before storage. The plaintext key is
+    returned to the caller exactly once and never stored.
     """
     if institution_address is None:
         institution_address = get_issuer_address()
@@ -518,7 +531,8 @@ def register_did(
     ).hexdigest()[:16]
     did = f"did:algo:testnet:{institution_address}:{inst_suffix}"
 
-    api_key = generate_api_key()
+    api_key      = generate_api_key()
+    api_key_hash = _hash_api_key(api_key)   # only the hash is stored in DB
 
     public_key_b64 = base64.b64encode(
         encoding.decode_address(institution_address)
@@ -550,7 +564,7 @@ def register_did(
             """,
             (
                 institution_address, did, institution_name, public_key_b64,
-                "pending", api_key, domain, time.strftime("%Y-%m-%d"),
+                "pending", api_key_hash, domain, time.strftime("%Y-%m-%d"),
                 institution_id, institution_address, wallet_version,
                 private_key_enc, key_nonce,
             ),
@@ -586,7 +600,7 @@ def register_did(
         "did":            did,
         "address":        institution_address,
         "institution_id": institution_id,
-        "api_key":        api_key,
+        "api_key":        api_key,        # plaintext returned ONCE to caller; never stored
         "domain":         domain,
         "wallet_version": wallet_version,
     }
@@ -598,19 +612,27 @@ def validate_api_key(api_key: str) -> dict | None:
     """
     Validate an API key and return institution data.
 
-    Returns dict with address, did, institution, domain, api_key,
-    institution_id, wallet_version — or None if the key is invalid.
+    The incoming key is hashed before the DB lookup so that the stored
+    value is never the raw secret.
+
+    Returns dict with address, did, institution, domain, institution_id,
+    wallet_version — or None if the key is invalid.
     """
+    if not api_key:
+        return None
+
+    api_key_hash = _hash_api_key(api_key)
+
     conn = get_db_connection()
     cur  = dict_cursor(conn)
     try:
         cur.execute(
             """
-            SELECT address, did, institution, domain, api_key,
+            SELECT address, did, institution, domain,
                    institution_id, wallet_version
             FROM did_registry WHERE api_key = %s
             """,
-            (api_key,),
+            (api_key_hash,),
         )
         row = cur.fetchone()
     finally:
@@ -631,7 +653,6 @@ def validate_api_key(api_key: str) -> dict | None:
         "did":            row["did"],
         "institution":    row["institution"],
         "domain":         row["domain"],
-        "api_key":        row["api_key"],
         "institution_id": institution_id,
         "wallet_version": wallet_version,
     }

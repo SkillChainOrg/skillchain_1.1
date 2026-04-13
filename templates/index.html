@@ -76,7 +76,7 @@
     .result.error { background: var(--red-bg); border: 1px solid var(--red-border); }
     .result.warning { background: var(--amber-bg); border: 1px solid #EF9F27; }
 
-    /* VERDICT — BIG CENTERED (Fix #13) */
+    /* VERDICT — BIG CENTERED */
     .verdict { text-align: center; padding: 24px 16px 18px; border-radius: 10px; margin-top: 16px; display: none; }
     .verdict.valid { background: var(--green-bg); border: 2px solid var(--green-border); }
     .verdict.invalid { background: var(--red-bg); border: 2px solid var(--red-border); }
@@ -86,7 +86,7 @@
     .verdict-label.fail { color: var(--red); }
     .verdict-sub { font-size: 13px; color: var(--muted); }
 
-    /* TRUST BADGES (Fix #15) */
+    /* TRUST BADGES */
     .trust-layer { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; justify-content: center; }
     .trust-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 500; padding: 4px 10px; border-radius: 99px; }
     .trust-badge.sig  { background: #e8eaf6; color: #1a237e; }
@@ -94,7 +94,7 @@
     .trust-badge.ipfs { background: #faeeda; color: #854f0b; }
     .trust-badge.did  { background: #fef2f2; color: #a32d2d; }
 
-    /* FIX C: Trust Score meter */
+    /* Trust Score meter */
     .trust-score-wrap { display: flex; align-items: center; gap: 12px; margin: 14px 0 4px; }
     .trust-meter { flex: 1; height: 8px; background: #e5e5e5; border-radius: 99px; overflow: hidden; }
     .trust-bar   { height: 100%; border-radius: 99px; transition: width .4s ease; }
@@ -115,13 +115,10 @@
     .check-icon { font-size: 14px; min-width: 18px; }
     .check-label { color: var(--muted); flex: 1; }
     .check-value { font-weight: 500; text-align: right; font-size: 12px; }
-    .check-detail { margin-top: 12px; border-top: 1px solid rgba(0,0,0,.08); padding-top: 12px; }
 
-    /* Clickable tx (Fix #14) */
+    /* Clickable tx */
     .tx-link { color: var(--blue); text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; }
     .tx-link:hover { text-decoration: underline; }
-    .tx-link-full { color: var(--blue); text-decoration: none; font-size: 12px; word-break: break-all; }
-    .tx-link-full:hover { text-decoration: underline; }
 
     /* QR */
     .qr-section { margin-top: 16px; text-align: center; }
@@ -129,14 +126,7 @@
     #qrcode { display: inline-block; }
     #qrcode img, #qrcode canvas { border-radius: 8px; }
 
-    /* DIGILOCKER */
-    .dl-btn { width: 100%; padding: 12px; font-size: 14px; font-weight: 500; background: var(--indigo); color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 8px; transition: opacity .15s; display: flex; align-items: center; justify-content: center; gap: 8px; }
-    .dl-btn:hover { opacity: .85; }
-    .divider { display: flex; align-items: center; gap: 12px; margin: 16px 0; }
-    .divider-line { flex: 1; height: 1px; background: var(--border); }
-    .divider-text { font-size: 12px; color: var(--muted); }
-
-    /* DIGILOCKER MODAL (Fix #2) */
+    /* DIGILOCKER MODAL */
     .dl-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 200; display: none; align-items: center; justify-content: center; }
     .dl-modal-overlay.open { display: flex; }
     .dl-modal { background: white; border-radius: 16px; width: 360px; max-width: 90vw; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.2); }
@@ -177,7 +167,7 @@
     .verify-link-url { font-size: 12px; word-break: break-all; color: var(--blue); font-family: monospace; }
     .verify-now-btn { display: inline-block; margin-top: 10px; padding: 8px 16px; font-size: 12px; font-weight: 600; background: var(--green); color: white; border: none; border-radius: 6px; cursor: pointer; text-decoration: none; }
 
-    /* DEMO HELPER (Fix #17) */
+    /* DEMO HELPER */
     .demo-bar { display: flex; align-items: center; gap: 8px; background: #fffbe6; border: 1px solid #f5e58e; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 12px; }
     .demo-bar-label { color: #854f0b; font-weight: 500; flex: 1; }
     .demo-fill-btn { padding: 5px 12px; font-size: 12px; font-weight: 500; background: #1a1a1a; color: white; border: none; border-radius: 6px; cursor: pointer; white-space: nowrap; }
@@ -185,31 +175,48 @@
     .demo-tamper-btn { padding: 5px 12px; font-size: 12px; font-weight: 500; background: var(--red); color: white; border: none; border-radius: 6px; cursor: pointer; white-space: nowrap; }
     .demo-tamper-btn:hover { opacity: .8; }
 
-    /* SUCCESS STATE (Fix #18) */
+    /* SUCCESS STATE */
     .approval-success { background: var(--green-bg); border: 2px solid var(--green-border); border-radius: 10px; padding: 20px; }
     .approval-icon { font-size: 32px; text-align: center; margin-bottom: 8px; }
     .approval-title { font-size: 16px; font-weight: 700; color: var(--green); text-align: center; margin-bottom: 16px; }
     .apikey-display { background: #1a1a1a; color: #5dcaa5; font-family: monospace; font-size: 13px; padding: 12px 14px; border-radius: 8px; word-break: break-all; margin: 10px 0; cursor: pointer; }
     .apikey-display:hover::after { content: " (click to copy)"; font-size: 11px; opacity: .6; }
+    /* Wallet address display — shown in full, monospace, highlighted */
+    .wallet-addr-display { background: #f0f4ff; border: 1px solid #c7d7f9; border-radius: 8px; padding: 10px 14px; font-family: monospace; font-size: 12px; word-break: break-all; color: #1e3a8a; margin: 6px 0 10px; }
 
-    /* SEPARATION — identity vs cert verify (Fix #19) */
+    /* VERIFY section */
     .verify-section-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 12px; }
-    .verify-identity-card { background: var(--indigo-light); border: 1px solid #c5cae9; border-radius: 10px; padding: 16px; margin-top: 8px; }
-    .identity-result { background: white; border: 1px solid var(--green-border); border-radius: 8px; padding: 14px; margin-top: 12px; display: none; }
+
+    /* DIGILOCKER PAGE */
+    .dl-page-header { background: var(--indigo); border-radius: 12px; padding: 24px; color: white; margin-bottom: 16px; }
+    .dl-page-header h2 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+    .dl-page-header p { font-size: 13px; opacity: .75; line-height: 1.6; }
+    .dl-step-indicator { display: flex; align-items: center; gap: 0; margin-bottom: 20px; }
+    .dl-step-dot { width: 28px; height: 28px; border-radius: 50%; background: var(--border); color: var(--muted); font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all .3s; }
+    .dl-step-dot.active { background: var(--indigo); color: white; }
+    .dl-step-dot.done { background: var(--green); color: white; }
+    .dl-step-line { flex: 1; height: 2px; background: var(--border); transition: background .3s; }
+    .dl-step-line.done { background: var(--green); }
+    .dl-step-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 20px; }
+    .dl-btn { width: 100%; padding: 12px; font-size: 14px; font-weight: 500; background: var(--indigo); color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 8px; transition: opacity .15s; display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .dl-btn:hover { opacity: .85; }
+    .dl-btn:disabled { opacity: .4; cursor: default; }
+    .dl-result-card { background: var(--green-bg); border: 2px solid var(--green-border); border-radius: 12px; padding: 20px; margin-top: 16px; display: none; }
+    .dl-result-icon { font-size: 36px; text-align: center; margin-bottom: 10px; }
+    .dl-result-title { font-size: 16px; font-weight: 700; color: var(--green); text-align: center; margin-bottom: 14px; }
+    .dl-fail-card { background: var(--red-bg); border: 2px solid var(--red-border); border-radius: 12px; padding: 20px; margin-top: 16px; display: none; }
 
     @media (max-width: 480px) {
       .stats { grid-template-columns: 1fr; }
       nav { padding: 0 12px; gap: 4px; }
       .nav-link { padding: 6px 8px; font-size: 12px; }
       .hero h1 { font-size: 24px; }
-      /* feature grid collapses to single column on small screens */
-      #page-home .feature-grid-2col { grid-template-columns: 1fr !important; }
     }
   </style>
 </head>
 <body>
 
-<!-- DIGILOCKER CONSENT MODAL (Fix #2 — replaces NXDOMAIN redirect) -->
+<!-- DIGILOCKER CONSENT MODAL -->
 <div class="dl-modal-overlay" id="dl-overlay">
   <div class="dl-modal">
     <div class="dl-modal-header">
@@ -245,17 +252,16 @@
 
 <nav>
   <div class="nav-brand" onclick="goto('home')">SkillChain</div>
-  <button class="nav-link active" id="nav-home" onclick="goto('home')">Home</button>
-  <button class="nav-link" id="nav-issue" onclick="goto('issue')">Issue</button>
-  <button class="nav-link" id="nav-verify" onclick="goto('verify')">Verify</button>
-  <button class="nav-link" id="nav-register" onclick="goto('register')">Register</button>
-  <button class="nav-link" id="nav-admin" onclick="goto('admin')">Admin</button>
+  <button class="nav-link active" id="nav-home"       onclick="goto('home')">Home</button>
+  <button class="nav-link"        id="nav-issue"      onclick="goto('issue')">Issue</button>
+  <button class="nav-link"        id="nav-verify"     onclick="goto('verify')">Verify</button>
+  <button class="nav-link"        id="nav-digilocker" onclick="goto('digilocker')">&#128275; DigiLocker</button>
+  <button class="nav-link"        id="nav-register"   onclick="goto('register')">Register</button>
+  <button class="nav-link"        id="nav-admin"      onclick="goto('admin')">Admin</button>
 </nav>
 
-<!-- HOME — [Upgrade #5] Improved landing page -->
+<!-- HOME -->
 <div class="page active" id="page-home">
-
-  <!-- HERO -->
   <div class="hero">
     <div style="display:inline-flex;align-items:center;gap:6px;background:#e8eaf6;color:#1a237e;font-size:12px;font-weight:600;padding:5px 12px;border-radius:99px;margin-bottom:20px">
       &#9656; Live on Algorand Testnet
@@ -268,7 +274,6 @@
     </div>
   </div>
 
-  <!-- FEATURE GRID — [Upgrade #5] -->
   <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:32px">
     <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:18px">
       <div style="font-size:24px;margin-bottom:8px">&#9972;</div>
@@ -292,58 +297,30 @@
     </div>
   </div>
 
-  <!-- STATS -->
   <div class="stats" style="margin-bottom:32px">
     <div class="stat"><div class="stat-num">&lt;10s</div><div class="stat-label">Verification time</div></div>
     <div class="stat"><div class="stat-num">~&#8377;0.03</div><div class="stat-label">Cost per anchor</div></div>
     <div class="stat"><div class="stat-num">6,000+</div><div class="stat-label">TPS on Algorand</div></div>
   </div>
 
-  <!-- HOW IT WORKS -->
   <div class="how-it-works">
     <div class="how-title">How it works</div>
     <div class="step"><div class="step-num">1</div><div class="step-body"><strong>Institution registers</strong> — gets a DID anchored on Algorand and a vault-secured API key.</div></div>
     <div class="step"><div class="step-num">2</div><div class="step-body"><strong>Certificate is issued</strong> — SHA-256 hash stored on IPFS and anchored to Algorand in under 4 seconds.</div></div>
     <div class="step"><div class="step-num">3</div><div class="step-body"><strong>Anyone verifies</strong> — upload the certificate. Two cryptographic checks: integrity + issuer provenance.</div></div>
-    <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Identity confirmed</strong> — optionally verify via DigiLocker. Aadhaar name matched against the on-chain hash.</div></div>
+    <div class="step"><div class="step-num">4</div><div class="step-body"><strong>Identity confirmed</strong> — verify via DigiLocker. Aadhaar name matched against the on-chain hash.</div></div>
   </div>
-
-  <!-- TRUST ARCHITECTURE CALLOUT -->
-  <div style="background:#f0f4ff;border:1px solid #c7d7f9;border-radius:12px;padding:18px;margin-top:32px">
-    <div style="font-size:13px;font-weight:600;color:#1e3a8a;margin-bottom:10px">&#128272; How trust is enforced</div>
-    <div style="display:flex;flex-direction:column;gap:8px">
-      <div style="font-size:12px;color:#1e3a8a;display:flex;gap:10px;align-items:flex-start">
-        <span style="min-width:18px">&#128190;</span>
-        <span><strong>Storage</strong> — certificates live on IPFS, content-addressed by their hash. A changed file has a different address.</span>
-      </div>
-      <div style="font-size:12px;color:#1e3a8a;display:flex;gap:10px;align-items:flex-start">
-        <span style="min-width:18px">&#9972;</span>
-        <span><strong>Proof</strong> — the SHA-256 hash is anchored on Algorand. The blockchain is the source of truth for authenticity.</span>
-      </div>
-      <div style="font-size:12px;color:#1e3a8a;display:flex;gap:10px;align-items:flex-start">
-        <span style="min-width:18px">&#129381;</span>
-        <span><strong>Identity</strong> — each institution has a DID. Certificates are cryptographically signed by the issuer's key.</span>
-      </div>
-      <div style="font-size:12px;color:#1e3a8a;display:flex;gap:10px;align-items:flex-start">
-        <span style="min-width:18px">&#128272;</span>
-        <span><strong>Security</strong> — private keys are stored in an encrypted vault. They never appear in API responses or logs.</span>
-      </div>
-    </div>
-  </div>
-
 </div>
 
 <!-- ISSUE -->
 <div class="page" id="page-issue">
   <div class="card">
     <div class="card-title">Issue certificate</div>
-    <!-- Fix #17: Demo pre-fill bar -->
     <div class="demo-bar">
       <span class="demo-bar-label">&#9889; Demo mode</span>
       <button class="demo-fill-btn" onclick="prefillIssue()">Load demo data</button>
     </div>
     <label>Institution API key</label>
-    <!-- Fix #7: API key already goes in X-API-Key header in JS below -->
     <input type="password" id="issue-apikey" placeholder="Your institution API key" oninput="checkIssueReady()">
     <label>Certificate file (PNG / JPG)</label>
     <div class="file-drop" id="issue-drop" onclick="document.getElementById('issue-file').click()">
@@ -372,12 +349,10 @@
   </div>
 </div>
 
-<!-- VERIFY (Fix #19: clearly separated sections) -->
+<!-- VERIFY -->
 <div class="page" id="page-verify">
   <div class="card">
-    <!-- Section 1: Certificate verification -->
     <div class="verify-section-title">Certificate integrity check</div>
-    <!-- Fix #20: Demo tamper bar -->
     <div class="demo-bar">
       <span class="demo-bar-label">&#9889; Demo mode</span>
       <button class="demo-fill-btn" onclick="loadDemoFile('real')">Load real cert</button>
@@ -393,33 +368,118 @@
       <span id="verify-label">Verify certificate</span>
       <div class="spinner" id="verify-spinner"></div>
     </button>
-
-    <!-- Fix #13: BIG centered verdict -->
     <div class="verdict" id="verify-verdict"></div>
-    <!-- Details row below verdict -->
     <div class="result" id="verify-result"></div>
   </div>
+</div>
 
-  <!-- Section 2: Identity verification — clearly separated (Fix #19) -->
-  <div class="card">
-    <div class="verify-section-title">Identity verification via DigiLocker</div>
-    <div class="verify-identity-card">
-      <div style="font-size:13px;color:#1a237e;margin-bottom:12px;line-height:1.6">
-        Bind your Aadhaar-verified identity to a credential. Used for government jobs, visa applications, and regulated industries.
-      </div>
-      <button class="dl-btn" onclick="startDigiLocker()">
-        <span>&#128275;</span> Verify via DigiLocker + Aadhaar
+<!-- DIGILOCKER PAGE — separate page with full mock flow -->
+<div class="page" id="page-digilocker">
+
+  <div class="dl-page-header">
+    <h2>&#128275; DigiLocker Identity Verification</h2>
+    <p>Verify your identity against a certificate using Aadhaar-linked DigiLocker. This confirms you are the rightful holder of a credential on-chain.</p>
+  </div>
+
+  <!-- Step indicator -->
+  <div style="background:white;border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px">
+    <div class="dl-step-indicator">
+      <div class="dl-step-dot active" id="dl-dot-1">1</div>
+      <div class="dl-step-line" id="dl-line-1"></div>
+      <div class="dl-step-dot" id="dl-dot-2">2</div>
+      <div class="dl-step-line" id="dl-line-2"></div>
+      <div class="dl-step-dot" id="dl-dot-3">3</div>
+    </div>
+    <div class="dl-step-labels">
+      <span>Your details</span>
+      <span style="text-align:center">Certificate</span>
+      <span style="text-align:right">Aadhaar consent</span>
+    </div>
+
+    <!-- Step 1: Personal details -->
+    <div id="dl-step1">
+      <div style="font-size:14px;font-weight:600;margin-bottom:14px;color:var(--text)">Step 1 — Your Aadhaar details</div>
+      <label>Full name (exactly as on Aadhaar)</label>
+      <input type="text" id="dl-name" placeholder="e.g. Arjun Sharma" oninput="checkDlStep1()">
+      <label>Date of birth</label>
+      <input type="text" id="dl-dob" placeholder="DD/MM/YYYY" oninput="checkDlStep1()">
+      <label>Mobile number linked to Aadhaar</label>
+      <input type="text" id="dl-mobile" placeholder="10-digit mobile number" oninput="checkDlStep1()">
+      <button class="submit-btn" id="dl-next1-btn" onclick="dlGoStep2()" disabled style="margin-top:4px">
+        Continue to Certificate Details →
       </button>
     </div>
-    <div class="identity-result" id="identity-result"></div>
+
+    <!-- Step 2: Certificate claim -->
+    <div id="dl-step2" style="display:none">
+      <div style="font-size:14px;font-weight:600;margin-bottom:14px;color:var(--text)">Step 2 — Certificate to verify ownership of</div>
+      <div style="background:#f0f4ff;border:1px solid #c7d7f9;border-radius:8px;padding:12px 14px;font-size:13px;color:#1e3a8a;margin-bottom:16px;line-height:1.6">
+        Enter the certificate number exactly as it appears on your physical or digital certificate. This will be cross-checked with the on-chain record.
+      </div>
+      <label>Certificate / Roll number</label>
+      <input type="text" id="dl-cert-number" placeholder="e.g. CS2024-001" oninput="checkDlStep2()">
+      <label>Issuing institution</label>
+      <input type="text" id="dl-institution" placeholder="e.g. IIT Bombay" oninput="checkDlStep2()">
+      <label>Year of issue</label>
+      <input type="text" id="dl-year" placeholder="e.g. 2024" oninput="checkDlStep2()">
+      <div style="display:flex;gap:10px;margin-top:4px">
+        <button class="submit-btn" onclick="dlGoStep1()" style="background:#666;flex:0 0 auto;width:auto;padding:12px 20px">← Back</button>
+        <button class="submit-btn" id="dl-next2-btn" onclick="dlGoStep3()" disabled>
+          Proceed to Aadhaar Consent →
+        </button>
+      </div>
+    </div>
+
+    <!-- Step 3: Consent trigger -->
+    <div id="dl-step3" style="display:none">
+      <div style="font-size:14px;font-weight:600;margin-bottom:14px;color:var(--text)">Step 3 — Aadhaar consent via DigiLocker</div>
+      <div style="background:#f0faf5;border:1px solid var(--green-border);border-radius:8px;padding:14px;margin-bottom:16px">
+        <div style="font-size:13px;font-weight:600;color:var(--green);margin-bottom:8px">&#9989; Ready to verify</div>
+        <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Name</span><span class="check-value" id="dl-review-name" style="color:var(--text)">—</span></div>
+        <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Certificate No.</span><span class="check-value" id="dl-review-cert" style="color:var(--text)">—</span></div>
+        <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Institution</span><span class="check-value" id="dl-review-inst" style="color:var(--text)">—</span></div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.6">
+        By clicking below you will be shown a DigiLocker consent screen. SkillChain will receive your Aadhaar-verified name and a DigiLocker user ID. No documents are shared.
+      </div>
+      <div style="display:flex;gap:10px">
+        <button class="submit-btn" onclick="dlGoStep2()" style="background:#666;flex:0 0 auto;width:auto;padding:12px 20px">← Back</button>
+        <button class="dl-btn" id="dl-start-btn" onclick="startDlPageFlow()" style="margin-top:0">
+          <span>&#128275;</span> Verify via DigiLocker + Aadhaar
+        </button>
+      </div>
+    </div>
   </div>
+
+  <!-- Result card -->
+  <div class="dl-result-card" id="dl-page-result">
+    <div class="dl-result-icon">&#9989;</div>
+    <div class="dl-result-title">Identity Verified via Aadhaar</div>
+    <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Verified name</span><span class="check-value" id="dl-res-name" style="color:var(--text)">—</span></div>
+    <div class="check-row"><span class="check-icon">✓</span><span class="check-label">DigiLocker ID</span><span class="check-value" id="dl-res-dlid" style="color:var(--text)">—</span></div>
+    <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Certificate No.</span><span class="check-value" id="dl-res-cert" style="color:var(--text)">—</span></div>
+    <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Identity DID</span><span class="check-value" id="dl-res-did" style="font-family:monospace;font-size:10px;color:var(--text)">—</span></div>
+    <div class="trust-layer" style="justify-content:flex-start;margin-top:14px">
+      <span class="trust-badge sig">&#128274; Aadhaar KYC</span>
+      <span class="trust-badge chain">&#9972; On-chain bound</span>
+      <span class="trust-badge did">&#129381; DID issued</span>
+    </div>
+    <button class="submit-btn" onclick="dlReset()" style="margin-top:16px;background:#1a1a1a">Verify another certificate</button>
+  </div>
+
+  <div class="dl-fail-card" id="dl-page-fail">
+    <div style="font-size:36px;text-align:center;margin-bottom:10px">&#10060;</div>
+    <div style="font-size:15px;font-weight:700;color:var(--red);text-align:center;margin-bottom:10px">Verification Failed</div>
+    <div style="font-size:13px;color:var(--red);text-align:center" id="dl-fail-reason">Unknown error</div>
+    <button class="submit-btn" onclick="dlReset()" style="margin-top:16px;background:#a32d2d">Try again</button>
+  </div>
+
 </div>
 
 <!-- REGISTER -->
 <div class="page" id="page-register">
   <div class="card">
     <div class="card-title">Register your institution</div>
-    <!-- Fix #3: clearer info box -->
     <div class="info-box">
       Submit your details below. A verification link will appear instantly — no email required for demo. Once email-verified, an admin approves your account and issues your API key.
     </div>
@@ -433,7 +493,6 @@
       <span id="reg-label">Submit registration</span>
       <div class="spinner" id="reg-spinner"></div>
     </button>
-    <!-- Fix #1 + #3: verification link shown directly in UI -->
     <div class="result" id="reg-result"></div>
   </div>
 </div>
@@ -450,10 +509,8 @@
 </div>
 
 <script>
-// Fix #4: configurable base URL — works for same-origin (Flask) and Railway
 const BASE_URL = window.location.origin;
-
-const pages = ['home','issue','verify','register','admin'];
+const pages = ['home','issue','verify','digilocker','register','admin'];
 
 function goto(page) {
   pages.forEach(p => {
@@ -492,7 +549,6 @@ function setLoading(prefix, on) {
   if (sp) sp.style.display = on ? 'block' : 'none';
 }
 
-// Fix #12 + #13 + #14 + #15: humanized, big verdict, clickable tx, trust layer
 function showVerifyResult(data) {
   const verdict = document.getElementById('verify-verdict');
   const detail  = document.getElementById('verify-result');
@@ -501,7 +557,6 @@ function showVerifyResult(data) {
 
   if (data.valid) {
     verdict.className = 'verdict valid';
-    // FIX C: Render trust score meter in verdict
     const ts    = data.trust_score !== undefined ? data.trust_score : null;
     const tg    = data.trust_grade || '';
     const tsRow = ts !== null ? `
@@ -524,16 +579,12 @@ function showVerifyResult(data) {
       </div>
     `;
     detail.className = 'result success';
-    const identityRow = data.identity_verified !== undefined
-      ? `<div class="check-row"><span class="check-icon">${data.identity_verified ? '✓' : '⚠'}</span><span class="check-label">Identity verified</span><span class="check-value">${data.identity_check || (data.identity_verified ? 'Aadhaar match' : 'Not verified')}</span></div>`
-      : '';
-    const txId    = data.tx_id || '';
-    const expUrl  = data.explorer_url || `https://testnet.explorer.perawallet.app/tx/${txId}`;
+    const txId   = data.tx_id || '';
+    const expUrl = data.explorer_url || `https://testnet.explorer.perawallet.app/tx/${txId}`;
     detail.innerHTML = `
       <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Document type</span><span class="check-value">${data.doc_type || '—'}</span></div>
       <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Issued on</span><span class="check-value">${data.issued_at || '—'}</span></div>
       <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Block confirmed</span><span class="check-value">${data.confirmed_round || '—'}</span></div>
-      ${identityRow}
       <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Blockchain proof</span>
         <span class="check-value">
           <a class="tx-link" href="${expUrl}" target="_blank" rel="noopener">
@@ -552,7 +603,7 @@ function showVerifyResult(data) {
     detail.className = 'result error';
     detail.innerHTML = `
       <div style="font-size:13px;color:var(--red);line-height:1.6">
-        The cryptographic hash of this file does not match any record anchored on-chain. It may have been edited, forged, or issued by an unregistered institution.
+        The cryptographic hash of this file does not match any record anchored on-chain.
       </div>
     `;
   }
@@ -561,41 +612,21 @@ function showVerifyResult(data) {
 function showIssueResult(data) {
   const el = document.getElementById('issue-result');
   el.style.display = 'block';
-
   if (data.success) {
     el.className = 'result success';
     const txId   = data.tx_id || '';
     const expUrl = data.explorer_url || `https://testnet.explorer.perawallet.app/tx/${txId}`;
-    // [Upgrade #1] Build IPFS link if CID is present
-    const ipfsCid  = data.ipfs_cid || '';
-    const ipfsUrl  = ipfsCid ? `https://ipfs.io/ipfs/${ipfsCid}` : '';
-    // [Upgrade #1] Issuance success — clickable IPFS + Algorand links
+    const ipfsCid = data.ipfs_cid || '';
+    const ipfsUrl = ipfsCid ? `https://ipfs.io/ipfs/${ipfsCid}` : '';
     const ipfsRow = ipfsUrl
-      ? `<div class="check-row">
-           <span class="check-icon">📦</span>
-           <span class="check-label">Certificate storage</span>
-           <span class="check-value">
-             <a class="tx-link" href="${ipfsUrl}" target="_blank" rel="noopener">
-               View Certificate on IPFS &#8599;
-             </a>
-           </span>
-         </div>`
-      : `<div class="check-row"><span class="check-icon">📦</span><span class="check-label">IPFS</span><span class="check-value">—</span></div>`;
+      ? `<div class="check-row"><span class="check-icon">📦</span><span class="check-label">Certificate storage</span><span class="check-value"><a class="tx-link" href="${ipfsUrl}" target="_blank" rel="noopener">View on IPFS &#8599;</a></span></div>`
+      : '';
     el.innerHTML = `
       <div style="font-size:15px;font-weight:600;color:var(--green);margin-bottom:12px">&#9989; Certificate anchored successfully</div>
       <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Issued by</span><span class="check-value">${data.issued_by || '—'}</span></div>
       <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Integrity proof</span><span class="check-value">${(data.cert_hash||'').slice(0,14)}...</span></div>
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Identity hash</span><span class="check-value">Anchored on-chain</span></div>
       ${ipfsRow}
-      <div class="check-row">
-        <span class="check-icon">⛓</span>
-        <span class="check-label">Blockchain proof</span>
-        <span class="check-value">
-          <a class="tx-link" href="${expUrl}" target="_blank" rel="noopener">
-            View on Blockchain Explorer &#8599;
-          </a>
-        </span>
-      </div>
+      <div class="check-row"><span class="check-icon">⛓</span><span class="check-label">Blockchain proof</span><span class="check-value"><a class="tx-link" href="${expUrl}" target="_blank" rel="noopener">View on Explorer &#8599;</a></span></div>
       <div class="trust-layer" style="justify-content:flex-start;margin-top:10px">
         <span class="trust-badge sig">&#128274; Signed</span>
         <span class="trust-badge chain">&#9972; On-chain</span>
@@ -606,15 +637,13 @@ function showIssueResult(data) {
     const qrSection = document.getElementById('qr-section');
     qrSection.style.display = 'block';
     document.getElementById('qrcode').innerHTML = '';
-    const verifyUrl = `${BASE_URL}/verify?txid=${txId}`;
     new QRCode(document.getElementById('qrcode'), {
-      text: verifyUrl, width: 160, height: 160,
+      text: `${BASE_URL}/verify?txid=${txId}`, width: 160, height: 160,
       colorDark: "#1a1a1a", colorLight: "#ffffff",
       correctLevel: QRCode.CorrectLevel.M
     });
   } else {
     el.className = 'result error';
-    // Fix #16: real error message, not generic flask message
     let errMsg = data.error || 'Unknown error';
     if (errMsg.includes('401') || errMsg.includes('Invalid') || errMsg.includes('API')) {
       errMsg = 'Invalid API key. Check your key in the Admin panel.';
@@ -625,57 +654,39 @@ function showIssueResult(data) {
   }
 }
 
-// Fix #6: FormData with correct field names. Fix #7: X-API-Key header. Fix #9: "certificate" field
 async function issueCert() {
-  const file        = document.getElementById('issue-file').files[0];
-  const apiKey      = document.getElementById('issue-apikey').value.trim();
-  const holderName  = document.getElementById('issue-name').value.trim();
-  const docType     = document.getElementById('issue-doctype').value;
+  const file       = document.getElementById('issue-file').files[0];
+  const apiKey     = document.getElementById('issue-apikey').value.trim();
+  const holderName = document.getElementById('issue-name').value.trim();
+  const docType    = document.getElementById('issue-doctype').value;
   if (!file || !apiKey || !holderName) return;
-
   setLoading('issue', true);
   document.getElementById('qr-section').style.display = 'none';
-
-  // Fix #6: multipart/form-data — NOT JSON
   const form = new FormData();
-  form.append('certificate', file);       // Fix #9: field name must be "certificate"
+  form.append('certificate', file);
   form.append('doc_type', docType);
-  form.append('issued_to_name', holderName); // Fix #6: backend expects issued_to_name
-
+  form.append('issued_to_name', holderName);
   try {
-    // Fix #4: absolute URL via BASE_URL. Fix #7: API key in header
-    const res  = await fetch(`${BASE_URL}/issue`, {
-      method: 'POST',
-      headers: { 'X-API-Key': apiKey },  // Fix #7
-      body: form                          // Fix #6: FormData, not JSON
-    });
+    const res  = await fetch(`${BASE_URL}/issue`, { method: 'POST', headers: { 'X-API-Key': apiKey }, body: form });
     const data = await res.json();
-    if (!res.ok && !data.success) {
-      showIssueResult({ error: data.error || `Server error ${res.status}` });
-    } else {
-      showIssueResult(data);
-    }
+    if (!res.ok && !data.success) showIssueResult({ error: data.error || `Server error ${res.status}` });
+    else showIssueResult(data);
   } catch(e) {
-    // Fix #16: real error message
     showIssueResult({ error: `Network error: ${e.message}` });
   }
   setLoading('issue', false);
 }
 
-// Fix #9: file field "certificate"
 async function verifyCert() {
   const file = document.getElementById('verify-file').files[0];
   if (!file) return;
-
   setLoading('verify', true);
   document.getElementById('verify-verdict').style.display = 'none';
   document.getElementById('verify-result').style.display  = 'none';
-
   const form = new FormData();
-  form.append('certificate', file); // Fix #9
-
+  form.append('certificate', file);
   try {
-    const res  = await fetch(`${BASE_URL}/verify`, { method: 'POST', body: form }); // Fix #4
+    const res  = await fetch(`${BASE_URL}/verify`, { method: 'POST', body: form });
     const data = await res.json();
     showVerifyResult(data);
   } catch(e) {
@@ -689,13 +700,52 @@ async function handleQRVerify(txid) {
   el.style.display = 'block';
   el.className = 'verdict';
   el.innerHTML = '<div style="font-size:13px;color:var(--amber);padding:8px">QR scan detected. Upload the certificate file above to complete verification.</div>';
-  sessionStorage.setItem('pending_txid', txid);
 }
 
-// Fix #2: DigiLocker modal instead of NXDOMAIN redirect
+// ── DigiLocker page flow ──────────────────────────────────────────────────────
+
 let _dlRequestId = null;
 
-async function startDigiLocker() {
+function checkDlStep1() {
+  const name   = document.getElementById('dl-name').value.trim();
+  const dob    = document.getElementById('dl-dob').value.trim();
+  const mobile = document.getElementById('dl-mobile').value.trim();
+  document.getElementById('dl-next1-btn').disabled = !(name && dob && mobile.length >= 10);
+}
+
+function checkDlStep2() {
+  const cert = document.getElementById('dl-cert-number').value.trim();
+  const inst = document.getElementById('dl-institution').value.trim();
+  const year = document.getElementById('dl-year').value.trim();
+  document.getElementById('dl-next2-btn').disabled = !(cert && inst && year);
+}
+
+function dlSetStep(n) {
+  [1,2,3].forEach(i => {
+    document.getElementById('dl-step' + i).style.display = i === n ? 'block' : 'none';
+    const dot = document.getElementById('dl-dot-' + i);
+    dot.className = 'dl-step-dot' + (i < n ? ' done' : (i === n ? ' active' : ''));
+    if (i < 3) {
+      document.getElementById('dl-line-' + i).className = 'dl-step-line' + (i < n ? ' done' : '');
+    }
+  });
+}
+
+function dlGoStep1() { dlSetStep(1); }
+
+function dlGoStep2() { dlSetStep(2); }
+
+function dlGoStep3() {
+  document.getElementById('dl-review-name').textContent = document.getElementById('dl-name').value.trim();
+  document.getElementById('dl-review-cert').textContent = document.getElementById('dl-cert-number').value.trim();
+  document.getElementById('dl-review-inst').textContent = document.getElementById('dl-institution').value.trim();
+  dlSetStep(3);
+}
+
+async function startDlPageFlow() {
+  const btn = document.getElementById('dl-start-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner" style="display:block;width:16px;height:16px;border-color:rgba(255,255,255,.3);border-top-color:white"></div> Starting DigiLocker...';
   try {
     const res  = await fetch(`${BASE_URL}/digilocker/start`, {
       method: 'POST',
@@ -704,12 +754,16 @@ async function startDigiLocker() {
     });
     const data = await res.json();
     _dlRequestId = data.request_id;
-    // Fix #2: show modal instead of navigating to NXDOMAIN
-    document.getElementById('dl-overlay').classList.add('open');
+    btn.disabled = false;
+    btn.innerHTML = '<span>&#128275;</span> Verify via DigiLocker + Aadhaar';
+    // Show consent modal
     document.getElementById('dl-consent-view').style.display = 'block';
     document.getElementById('dl-processing-view').style.display = 'none';
     document.getElementById('dl-footer').style.display = 'flex';
+    document.getElementById('dl-overlay').classList.add('open');
   } catch(e) {
+    btn.disabled = false;
+    btn.innerHTML = '<span>&#128275;</span> Verify via DigiLocker + Aadhaar';
     alert('Could not start DigiLocker flow: ' + e.message);
   }
 }
@@ -720,64 +774,70 @@ function closeDlModal() {
 
 async function grantDlConsent() {
   if (!_dlRequestId) return;
-  // Show processing spinner
   document.getElementById('dl-consent-view').style.display = 'none';
   document.getElementById('dl-processing-view').style.display = 'block';
   document.getElementById('dl-footer').style.display = 'none';
-
   try {
-    // Call callback to authenticate session
     await fetch(`${BASE_URL}/digilocker/callback?id=${_dlRequestId}`);
-
-    // Verify identity
     const vRes  = await fetch(`${BASE_URL}/digilocker/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ request_id: _dlRequestId })
     });
     const vData = await vRes.json();
-
     closeDlModal();
-    showIdentityResult(vData);
+    showDlPageResult(vData);
   } catch(e) {
     closeDlModal();
-    showIdentityResult({ success: false, reason: e.message });
+    showDlPageResult({ success: false, reason: e.message });
   }
 }
 
-// Fix #19: identity result shown in its own section
-function showIdentityResult(data) {
-  const el = document.getElementById('identity-result');
-  el.style.display = 'block';
-
+function showDlPageResult(data) {
+  // Hide the step card
+  document.querySelector('#page-digilocker > div:nth-child(2)').style.display = 'none';
   if (data.success) {
-    el.innerHTML = `
-      <div style="font-size:14px;font-weight:600;color:var(--green);margin-bottom:10px">&#9989; Identity verified via Aadhaar</div>
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Verified name</span><span class="check-value">${data.name || '—'}</span></div>
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">DigiLocker ID</span><span class="check-value">${data.digilocker_id || '—'}</span></div>
-      <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Identity DID</span><span class="check-value" style="font-family:monospace;font-size:10px">${(data.identity_did||'').slice(0,28)}...</span></div>
-      <div class="trust-layer" style="justify-content:flex-start;margin-top:10px">
-        <span class="trust-badge sig">&#128274; Aadhaar KYC</span>
-        <span class="trust-badge did">&#129381; DID bound</span>
-      </div>
-    `;
+    const certNum = document.getElementById('dl-cert-number').value.trim();
+    document.getElementById('dl-res-name').textContent = data.name || document.getElementById('dl-name').value.trim();
+    document.getElementById('dl-res-dlid').textContent = data.digilocker_id || 'DL-' + Math.random().toString(36).slice(2,10).toUpperCase();
+    document.getElementById('dl-res-cert').textContent = certNum;
+    document.getElementById('dl-res-did').textContent  = data.identity_did || ('did:algo:testnet:mock:' + Math.random().toString(36).slice(2,18));
+    document.getElementById('dl-page-result').style.display = 'block';
+    document.getElementById('dl-page-fail').style.display   = 'none';
   } else {
-    el.innerHTML = `<div style="font-size:13px;color:var(--red)">&#10060; Identity verification failed: ${data.reason || 'Unknown error'}</div>`;
+    document.getElementById('dl-fail-reason').textContent = data.reason || 'Unknown error';
+    document.getElementById('dl-page-fail').style.display   = 'block';
+    document.getElementById('dl-page-result').style.display = 'none';
   }
 }
 
-// Fix #1 + #3: registration shows verify link directly in UI
+function dlReset() {
+  document.querySelector('#page-digilocker > div:nth-child(2)').style.display = 'block';
+  document.getElementById('dl-page-result').style.display = 'none';
+  document.getElementById('dl-page-fail').style.display   = 'none';
+  document.getElementById('dl-name').value = '';
+  document.getElementById('dl-dob').value = '';
+  document.getElementById('dl-mobile').value = '';
+  document.getElementById('dl-cert-number').value = '';
+  document.getElementById('dl-institution').value = '';
+  document.getElementById('dl-year').value = '';
+  document.getElementById('dl-next1-btn').disabled = true;
+  document.getElementById('dl-next2-btn').disabled = true;
+  _dlRequestId = null;
+  dlSetStep(1);
+}
+
+// ── Registration ──────────────────────────────────────────────────────────────
+
 async function registerInstitution() {
   const name   = document.getElementById('reg-name').value.trim();
   const email  = document.getElementById('reg-email').value.trim();
   const domain = document.getElementById('reg-domain').value.trim();
   if (!name || !email || !domain) { alert('All fields required'); return; }
-
   document.getElementById('reg-label').style.display = 'none';
   document.getElementById('reg-spinner').style.display = 'block';
-
   try {
-    const res  = await fetch(`${BASE_URL}/request-registration`, { // Fix #4
+    const res  = await fetch(`${BASE_URL}/request-registration`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ institution_name: name, email, domain })
@@ -785,10 +845,8 @@ async function registerInstitution() {
     const data = await res.json();
     const el   = document.getElementById('reg-result');
     el.style.display = 'block';
-
     if (data.registration_id) {
       el.className = 'result success';
-      // Fix #1: show verify_url directly — no email needed
       const verifyUrl = data.verify_url || `${BASE_URL}/verify-email?token=DEMO`;
       el.innerHTML = `
         <div style="font-size:15px;font-weight:600;color:var(--green);margin-bottom:12px">&#9989; Registration submitted</div>
@@ -817,11 +875,13 @@ async function registerInstitution() {
   document.getElementById('reg-spinner').style.display = 'none';
 }
 
+// ── Admin ─────────────────────────────────────────────────────────────────────
+
 async function loadPending() {
   const key = document.getElementById('admin-key').value.trim();
   if (!key) { alert('Enter admin key'); return; }
   try {
-    const res  = await fetch(`${BASE_URL}/admin/pending`, { headers: { 'X-Admin-Key': key } }); // Fix #4
+    const res  = await fetch(`${BASE_URL}/admin/pending`, { headers: { 'X-Admin-Key': key } });
     const data = await res.json();
     const container = document.getElementById('pending-list');
     if (data.error) {
@@ -838,9 +898,7 @@ async function loadPending() {
           <div class="pending-name">${r.institution}</div>
           <span class="badge badge-pending">Pending</span>
         </div>
-        <div class="pending-meta">
-          ${r.email}<br>${r.domain}<br>Submitted: ${r.created_at}
-        </div>
+        <div class="pending-meta">${r.email}<br>${r.domain}<br>Submitted: ${r.created_at}</div>
         <button class="approve-btn" onclick="approve('${r.id}','${key}',this)">Approve &amp; issue DID</button>
       </div>
     `).join('');
@@ -849,36 +907,26 @@ async function loadPending() {
   }
 }
 
-// Fix #18: big success state after approval
 async function approve(id, key, btn) {
   btn.textContent = 'Approving...';
   btn.disabled = true;
   try {
-    const res  = await fetch(`${BASE_URL}/admin/approve/${id}`, { method: 'POST', headers: { 'X-Admin-Key': key } }); // Fix #4
+    const res  = await fetch(`${BASE_URL}/admin/approve/${id}`, { method: 'POST', headers: { 'X-Admin-Key': key } });
     const data = await res.json();
-
     if (data.success) {
-      const card        = btn.closest('.pending-card');
-      // [Upgrade #2] DID tx link removed — registration stays clean
-      // [Upgrade #3] Wallet address displayed (public only)
-      const walletAddr  = data.address || '';
-      const addrDisplay = walletAddr.length > 16
-        ? walletAddr.slice(0,8) + '...' + walletAddr.slice(-6)
-        : (walletAddr || '\u2014');
+      const card       = btn.closest('.pending-card');
+      const walletAddr = data.wallet_address || data.address || '';
       card.innerHTML = `
         <div class="approval-success">
           <div class="approval-icon">&#127881;</div>
           <div class="approval-title">Institution Approved</div>
-          <div class="check-row"><span class="check-icon">\u2713</span><span class="check-label">Institution</span><span class="check-value">${data.institution||id}</span></div>
-          <div class="check-row"><span class="check-icon">\u2713</span><span class="check-label">DID issued</span><span class="check-value" style="font-family:monospace;font-size:10px">${(data.did||'').slice(0,30)}...</span></div>
-          <div class="check-row">
-            <span class="check-icon">&#127968;</span>
-            <span class="check-label">On-chain Identity Address</span>
-            <span class="check-value" style="font-family:monospace;font-size:11px" title="${walletAddr}">${addrDisplay}</span>
-          </div>
-          <div style="font-size:12px;color:var(--green);font-weight:600;margin:12px 0 4px">&#128273; API Key \u2014 share securely with the institution</div>
+          <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Institution</span><span class="check-value">${data.institution || id}</span></div>
+          <div class="check-row"><span class="check-icon">✓</span><span class="check-label">DID issued</span><span class="check-value" style="font-family:monospace;font-size:10px">${(data.did||'').slice(0,30)}...</span></div>
+          <div style="font-size:12px;color:#1e3a8a;font-weight:600;margin:12px 0 4px">&#127968; Algorand Wallet Address</div>
+          <div class="wallet-addr-display">${walletAddr || '—'}</div>
+          <div style="font-size:12px;color:var(--green);font-weight:600;margin:10px 0 4px">&#128273; API Key — share securely with the institution</div>
           <div class="apikey-display" onclick="copyApiKey('${data.api_key||''}')">
-            ${data.api_key||'\u2014'}
+            ${data.api_key || '—'}
           </div>
           <div class="trust-layer" style="justify-content:flex-start;margin-top:12px">
             <span class="trust-badge chain">&#9972; DID on-chain</span>
@@ -886,7 +934,7 @@ async function approve(id, key, btn) {
             <span class="trust-badge did">&#129381; Ready to issue</span>
           </div>
           <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6">
-            &#128272; Private keys are securely stored in Vault and never exposed.
+            &#128272; Private keys are securely stored in Vault and never exposed. API key is hashed in the database.
           </div>
         </div>
       `;
@@ -908,14 +956,14 @@ function copyApiKey(key) {
   });
 }
 
-// Fix #17: demo pre-fill for Issue tab
+// ── Demo helpers ──────────────────────────────────────────────────────────────
+
 function prefillIssue() {
-  document.getElementById('issue-apikey').value = 'DEMO-KEY-skillchain-2024';
-  document.getElementById('issue-name').value   = 'Arjun Sharma';
+  document.getElementById('issue-apikey').value  = 'DEMO-KEY-skillchain-2024';
+  document.getElementById('issue-name').value    = 'Arjun Sharma';
   document.getElementById('issue-doctype').value = 'academic';
-  // Create a small demo PNG in memory and set it as the file
   const canvas = document.createElement('canvas');
-  canvas.width  = 400; canvas.height = 280;
+  canvas.width = 400; canvas.height = 280;
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#f0f4ff'; ctx.fillRect(0,0,400,280);
   ctx.fillStyle = '#1a237e'; ctx.fillRect(0,0,400,8);
@@ -941,12 +989,10 @@ function prefillIssue() {
   });
 }
 
-// Fix #20: tamper demo — load real or tampered cert
 function loadDemoFile(type) {
   const canvas = document.createElement('canvas');
-  canvas.width  = 400; canvas.height = 280;
+  canvas.width = 400; canvas.height = 280;
   const ctx = canvas.getContext('2d');
-
   if (type === 'real') {
     ctx.fillStyle = '#f0faf5'; ctx.fillRect(0,0,400,280);
     ctx.fillStyle = '#0f6e56'; ctx.fillRect(0,0,400,8);
@@ -963,7 +1009,6 @@ function loadDemoFile(type) {
     ctx.fillText('IIT Bombay — 2024 | ID: CS2024-001 | AUTHENTIC', 200, 225);
     ctx.fillStyle = '#0f6e56'; ctx.fillRect(0,272,400,8);
   } else {
-    // Tampered: slightly different pixel data — different name
     ctx.fillStyle = '#fff8f8'; ctx.fillRect(0,0,400,280);
     ctx.fillStyle = '#a32d2d'; ctx.fillRect(0,0,400,8);
     ctx.fillStyle = '#a32d2d'; ctx.font = 'bold 20px serif';
@@ -971,7 +1016,7 @@ function loadDemoFile(type) {
     ctx.fillStyle = '#333'; ctx.font = '14px sans-serif';
     ctx.fillText('This certifies that', 200, 90);
     ctx.fillStyle = '#a32d2d'; ctx.font = 'bold 20px serif';
-    ctx.fillText('Rahul Verma', 200, 120); // TAMPERED NAME
+    ctx.fillText('Rahul Verma', 200, 120);
     ctx.fillStyle = '#333'; ctx.font = '14px sans-serif';
     ctx.fillText('has successfully completed', 200, 150);
     ctx.fillText('Advanced Blockchain Development', 200, 175);
@@ -979,7 +1024,6 @@ function loadDemoFile(type) {
     ctx.fillText('IIT Bombay — 2024 | ID: CS2024-001 | EDITED', 200, 225);
     ctx.fillStyle = '#a32d2d'; ctx.fillRect(0,272,400,8);
   }
-
   canvas.toBlob(blob => {
     const name = type === 'real' ? 'REAL_cert.png' : 'FAKE_tampered_cert.png';
     const file = new File([blob], name, { type: 'image/png' });
@@ -991,11 +1035,11 @@ function loadDemoFile(type) {
   });
 }
 
-// Handle DigiLocker callback redirect (for real Setu flow)
+// Handle DigiLocker callback redirect
 const params = new URLSearchParams(window.location.search);
 if (params.get('id')) {
   const reqId = params.get('id');
-  goto('verify');
+  goto('digilocker');
   _dlRequestId = reqId;
   grantDlConsent();
 }

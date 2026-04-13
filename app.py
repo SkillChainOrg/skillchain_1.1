@@ -12,6 +12,11 @@ CHANGES (stabilization pass):
   - /request-registration and /admin/approve honour http_status from service dict.
   - /issue checks institution wallet readiness before anchoring (Fix 3).
   - All routes wrapped in try/except returning JSON errors — no stack traces (Fix 10).
+
+CHANGES (DID pass):
+  - /did/<path:did> constructs a W3C-compliant DID document directly from did_registry.
+    No longer depends on w3c_did_service for resolution; that service is kept for
+    pre-generation/caching only.
 """
 
 import hashlib
@@ -52,7 +57,7 @@ from digilocker_service import (
 from identity_service import bind_identity, lookup_identity
 from queue_service import queue_batch, get_batch_status
 import db_migrations
-from db import get_db_connection
+from db import get_db_connection, dict_cursor
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -568,18 +573,90 @@ def admin_revoke_issuer(institution_id):
 
 @app.route("/did/<path:did>", methods=["GET"])
 def resolve_did_endpoint(did: str):
+    """
+    Resolve a DID to its W3C-compliant DID Document.
+
+    The document is constructed directly from did_registry so this endpoint
+    works even if w3c_did_service is unavailable. Content-Type is set to
+    application/did+ld+json per the W3C DID spec.
+
+    W3C DID Core 1.0 — https://www.w3.org/TR/did-core/
+    """
     try:
         import re
         if not re.match(r"^did:[a-z]+:[a-zA-Z0-9._\-:]+$", did):
             return jsonify({"error": "Invalid DID format"}), 400
 
-        from w3c_did_service import resolve_did
-        document = resolve_did(did)
+        conn = get_db_connection()
+        cur  = dict_cursor(conn)
+        try:
+            cur.execute(
+                """
+                SELECT institution, institution_address, address, public_key,
+                       domain, registered_at, wallet_version, revoked
+                FROM did_registry
+                WHERE did = %s
+                LIMIT 1
+                """,
+                (did,),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
 
-        if not document:
+        if not row:
             return jsonify({"error": "DID not found"}), 404
 
-        return jsonify(document), 200, {"Content-Type": "application/json"}
+        if row.get("revoked") == 1:
+            return jsonify({"error": "DID has been revoked"}), 410
+
+        institution_address = row.get("institution_address") or row.get("address", "")
+        registered_at       = row.get("registered_at", "")
+        public_key_b64      = row.get("public_key", "")
+
+        # ── W3C DID Document (DID Core 1.0) ──────────────────────────────────
+        document = {
+            "@context": [
+                "https://www.w3.org/ns/did/v1",
+                "https://w3id.org/security/suites/ed25519-2020/v1"
+            ],
+            "id": did,
+            "controller": did,
+            "verificationMethod": [
+                {
+                    "id":                 f"{did}#key-1",
+                    "type":               "Ed25519VerificationKey2020",
+                    "controller":         did,
+                    "publicKeyMultibase": f"z{public_key_b64}" if public_key_b64 else "",
+                }
+            ],
+            "authentication":  [f"{did}#key-1"],
+            "assertionMethod": [f"{did}#key-1"],
+            "service": [
+                {
+                    "id":              f"{did}#skillchain-issuer",
+                    "type":            "SkillChainIssuer",
+                    "serviceEndpoint": {
+                        "institutionName":  row.get("institution", ""),
+                        "domain":           row.get("domain", ""),
+                        "algorandAddress":  institution_address,
+                        "network":          "algorand-testnet",
+                        "registeredAt":     registered_at,
+                        "walletVersion":    row.get("wallet_version", 1),
+                    },
+                },
+                {
+                    "id":              f"{did}#linked-domain",
+                    "type":            "LinkedDomains",
+                    "serviceEndpoint": f"https://{row.get('domain', '')}",
+                },
+            ],
+        }
+
+        response = jsonify(document)
+        response.headers["Content-Type"] = "application/did+ld+json"
+        return response, 200
 
     except Exception as exc:
         log.error("resolve_did_endpoint error: %s", exc)
@@ -593,29 +670,38 @@ def view_did_endpoint(did: str):
         if not re.match(r"^did:[a-z]+:[a-zA-Z0-9._\-:]+$", did):
             return "Invalid DID format", 400
 
-        from w3c_did_service import resolve_did
-        document = resolve_did(did)
+        conn = get_db_connection()
+        cur  = dict_cursor(conn)
+        try:
+            cur.execute(
+                """
+                SELECT institution, institution_address, address, domain, registered_at
+                FROM did_registry WHERE did = %s LIMIT 1
+                """,
+                (did,),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
+
+        name    = row.get("institution", "") if row else ""
+        address = row.get("institution_address") or row.get("address", "") if row else ""
+
     except Exception as exc:
         log.error("view_did_endpoint error: %s", exc)
-        document = None
+        name    = ""
+        address = ""
+        row     = None
 
-    if not document:
+    if not row:
         from flask import render_template_string
         return render_template_string(
             "<h2>DID Not Found</h2><p>No identity document found for: <code>{{ did }}</code></p>",
             did=did
         ), 404
 
-    subject = document.get("id", did)
-    service = document.get("service", [{}])
-    name    = ""
-    address = ""
-    for svc in service:
-        if svc.get("type") == "SkillChainIssuer":
-            ep = svc.get("serviceEndpoint", {})
-            if isinstance(ep, dict):
-                name    = ep.get("institutionName", "")
-                address = ep.get("algorandAddress", "")
+    subject = did
 
     from flask import render_template_string
     return render_template_string("""<!DOCTYPE html>
@@ -630,11 +716,12 @@ h2{margin:0 0 4px;font-size:20px}.sub{font-size:13px;color:#666;margin-bottom:20
 .raw-btn{display:inline-block;margin-top:16px;padding:9px 18px;font-size:13px;font-weight:500;background:#1a1a1a;color:white;border-radius:8px;text-decoration:none}</style>
 </head><body><div class="card">
 <h2>Institution Identity</h2>
-<div class="sub">Decentralised Identity Document - W3C DID Standard</div>
+<div class="sub">Decentralised Identity Document - W3C DID Core 1.0</div>
 {% if address %}<div class="row"><span class="label">On-chain Address</span><span class="value">{{ address }}</span></div>{% endif %}
+{% if name %}<div class="row"><span class="label">Institution</span><span class="value">{{ name }}</span></div>{% endif %}
 <div class="row"><span class="label">DID</span><span class="value" style="font-size:11px">{{ subject }}</span></div>
 <div class="vault-badge">Vault Secured - Private keys never exposed</div><br>
-<a class="raw-btn" href="/did/{{ did }}">View Raw DID Document</a>
+<a class="raw-btn" href="/did/{{ did }}">View Raw DID Document (JSON-LD)</a>
 </div></body></html>""", subject=subject, name=name, address=address, did=did)
 
 
