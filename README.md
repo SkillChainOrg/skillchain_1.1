@@ -376,7 +376,15 @@ The Vault integration is architecturally sound — fail-hard on unavailability, 
 
 **Batch queue is not restart-safe.** Jobs queued but not yet anchored are lost if the Flask process restarts. There is no job persistence, retry mechanism, or dead-letter queue.
 
-**Smart contract is not integrated.** `smart_contracts/did_contract.py` and the AlgoKit project under `skill_contracts/` implement an on-chain DID registry using Algorand Box Storage. This contract is not deployed or called by any application code — the `did_registry` PostgreSQL table serves this role instead. The contract represents an architectural target, not current behaviour.
+### Smart Contract (On-Chain DID Registry)
+
+An Algorand ARC4 smart contract (`smart_contracts/did_contract.py`), along with the AlgoKit project under `skill_contracts/`, implements a decentralised DID registry using Algorand Box Storage.
+
+The current system uses a PostgreSQL-backed `did_registry` for DID resolution and management. This choice is deliberate: database-backed reads provide low-latency access and simplify integration with the verification pipeline during early-stage development.
+
+The smart contract represents the decentralised evolution of this layer. Integrating it would require replacing database operations with on-chain state access and transaction-driven updates, introducing additional latency, cost, and failure modes that were intentionally avoided in the current iteration.
+
+By separating the contract implementation from the active system, the architecture remains production-stable while still demonstrating a complete pathway to a fully decentralised registry.
 
 **`issued_to` semantic change is not backward-compatible.** Certificates issued before the April 11 refactor stored a `name_hash` in `issued_to`; certificates issued after store an `identity_did`. The `verify_identity_owns_cert` function does not handle the legacy case — certificates issued in the early period will fail identity verification.
 

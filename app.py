@@ -17,12 +17,18 @@ CHANGES (DID pass):
   - /did/<path:did> constructs a W3C-compliant DID document directly from did_registry.
     No longer depends on w3c_did_service for resolution; that service is kept for
     pre-generation/caching only.
+
+CHANGES (demo-hardening pass):
+  - GET /institution/wallet — returns wallet address + funding status, no private keys.
+  - /request-registration rewrites verify_url to use request.url_root so the link
+    works on Railway/Render/localhost without hardcoding.
 """
 
 import hashlib
 import io
 import logging
 import os
+import re
 import secrets
 import time
 import zipfile
@@ -99,7 +105,7 @@ def normalize_and_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(buffer.getvalue()).hexdigest()
 
 
-# ── Wallet readiness check (Fix 3) ───────────────────────────────────────────
+# ── Wallet readiness check ────────────────────────────────────────────────────
 
 def is_wallet_ready(address: str) -> bool:
     """
@@ -113,6 +119,49 @@ def is_wallet_ready(address: str) -> bool:
     except Exception as exc:
         log.warning("Wallet readiness check failed for %s: %s", address, exc)
         return False
+
+
+# ── Institution wallet info ───────────────────────────────────────────────────
+
+@app.route("/institution/wallet", methods=["GET"])
+def institution_wallet():
+    """
+    Return the authenticated institution's Algorand wallet address and live
+    funding status. Private keys are never returned.
+    """
+    try:
+        api_key     = request.headers.get("X-API-Key")
+        institution = validate_api_key(api_key)
+        if not institution:
+            return jsonify({"error": "Invalid or missing API key"}), 401
+
+        address = institution.get("address") or institution.get("institution_address")
+        if not address:
+            return jsonify({
+                "error": "No wallet found for this institution. Contact your admin."
+            }), 404
+
+        funded  = is_wallet_ready(address)
+        balance = None
+        try:
+            info    = get_algod_client().account_info(address)
+            balance = info.get("amount", 0)          # microAlgos
+        except Exception as exc:
+            log.warning("Balance fetch failed for %s: %s", address, exc)
+
+        return jsonify({
+            "wallet_address":    address,
+            "funded":            funded,
+            "balance_microalgo": balance,
+            "balance_algo":      round(balance / 1_000_000, 6) if balance is not None else None,
+            "min_required_algo": 0.2,
+            "network":           "algorand-testnet",
+            "faucet_url":        "https://bank.testnet.algorand.network/",
+        })
+
+    except Exception as exc:
+        log.error("institution_wallet error: %s", exc)
+        return jsonify({"error": "Could not fetch wallet info"}), 500
 
 
 # ── Batch issuance ────────────────────────────────────────────────────────────
@@ -140,23 +189,21 @@ def issue_batch():
         batch_id = secrets.token_hex(8)
         jobs     = []
 
-        # ── NEW: detect upload mode ───────────────────────────────────────────
         # Priority: explicit multi-file upload > ZIP fallback
-        direct_files = request.files.getlist("files")   # NEW – multi-file list
-        zip_file     = request.files.get("certificates") # existing ZIP field
+        direct_files = request.files.getlist("files")
+        zip_file     = request.files.get("certificates")
 
         if direct_files:
-            # ── NEW BRANCH: multiple files uploaded directly ──────────────────
-            if len(direct_files) > 500:                 # NEW – cap at 500
+            if len(direct_files) > 500:
                 return jsonify({"error": "Max 500 per batch"}), 400
 
-            ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf"}  # NEW
+            ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf"}
 
-            for upload in direct_files:                 # NEW
+            for upload in direct_files:
                 filename = upload.filename or ""
                 ext      = os.path.splitext(filename)[1].lower()
 
-                if ext not in ALLOWED_EXTENSIONS:       # NEW – skip bad types
+                if ext not in ALLOWED_EXTENSIONS:
                     jobs.append({
                         "filename": filename,
                         "error":    f"Unsupported file type: {ext}",
@@ -165,25 +212,25 @@ def issue_batch():
                     continue
 
                 try:
-                    file_bytes  = upload.read()                         # NEW
-                    cert_hash   = normalize_and_hash(file_bytes)        # reused
+                    file_bytes  = upload.read()
+                    cert_hash   = normalize_and_hash(file_bytes)
                     del file_bytes
 
-                    signature   = sign_credential(cert_hash, institution_id=inst_id)  # reused
+                    signature   = sign_credential(cert_hash, institution_id=inst_id)
 
                     basename    = os.path.splitext(os.path.basename(filename))[0]
-                    cert_number = basename                              # NEW – no metadata.json in direct mode
+                    cert_number = basename
 
-                    jobs.append({                                       # same shape as ZIP branch
+                    jobs.append({
                         "cert_hash":   cert_hash,
                         "signature":   signature,
                         "filename":    filename,
                         "doc_type":    doc_type,
                         "cert_number": cert_number,
-                        "issued_to":   None,  # not available without per-file metadata
+                        "issued_to":   None,
                     })
 
-                except Exception as e:                                  # NEW – skip, don't crash
+                except Exception as e:
                     log.warning("Skipping %s in direct batch: %s", filename, e)
                     jobs.append({
                         "filename": filename,
@@ -192,7 +239,6 @@ def issue_batch():
                     })
 
         elif zip_file:
-            # ── EXISTING BRANCH: ZIP upload (unchanged) ───────────────────────
             with zipfile.ZipFile(zip_file) as zf:
                 cert_meta: dict = {}
                 if "metadata.json" in zf.namelist():
@@ -245,15 +291,14 @@ def issue_batch():
                         })
 
         else:
-            # ── NEW: no files provided at all ─────────────────────────────────
             return jsonify({
                 "error": "No files uploaded. Use 'files' (multi-file) or 'certificates' (ZIP)."
             }), 400
 
-        if not jobs:                                                    # NEW – nothing to queue
+        if not jobs:
             return jsonify({"error": "No valid files found in the upload"}), 400
 
-        queue_batch(batch_id, jobs, institution)  # unchanged
+        queue_batch(batch_id, jobs, institution)
 
         return jsonify({
             "batch_id":       batch_id,
@@ -261,7 +306,6 @@ def issue_batch():
             "failed_at_hash": len([j for j in jobs if "error" in j]),
             "status_url":     f"/batch/status/{batch_id}",
             "message":        "Certificates hashed and queued for Algorand anchoring",
-            # NEW field – tells caller which mode was used
             "upload_mode":    "direct" if direct_files else "zip",
         })
 
@@ -284,12 +328,6 @@ def batch_status(batch_id):
 
 # ── DigiLocker ────────────────────────────────────────────────────────────────
 
-# ── PATCH: replace your existing digilocker_start() in app.py with this ──────
-#
-# The only change vs. the original is that we now read "name" from the
-# request body and forward it to create_digilocker_request().
-# Every other route in app.py is unchanged.
-
 @app.route("/digilocker/start", methods=["POST"])
 def digilocker_start():
     try:
@@ -302,10 +340,6 @@ def digilocker_start():
         if not user_name:
             return jsonify({"error": "name is required to start a DigiLocker session"}), 400
 
-        # Pass user_name into the service so it is stored against this request_id.
-        # When the real Setu integration is active, user_name is ignored here
-        # because the name comes from DigiLocker itself — but the parameter
-        # signature stays the same so no other code changes.
         result = create_digilocker_request(redirect_url, user_name)
         result["digilocker_url"] = f"/kyc-consent?id={result['request_id']}"
         return jsonify(result)
@@ -464,7 +498,6 @@ def issue():
         if file.filename == "":
             return jsonify({"error": "Empty filename"}), 400
 
-        # Fix 3: wallet readiness check before issuance
         inst_address = institution.get("address") or institution.get("institution_address")
         if inst_address and not is_wallet_ready(inst_address):
             return jsonify({"error": "Institution wallet not funded"}), 400
@@ -549,8 +582,18 @@ def request_reg():
             data["institution_name"], data["email"], data["domain"]
         )
 
-        # Fix 2: honour http_status returned by the service layer
         status_code = result.pop("http_status", 200)
+
+        # FIX (Flaw 3): Rewrite verify_url to match the current deployment host.
+        # did_service may hardcode localhost — this patch makes it environment-aware
+        # so the link works identically on Railway, Render, or localhost.
+        if result.get("verify_url"):
+            result["verify_url"] = re.sub(
+                r'^https?://[^/]+',
+                request.url_root.rstrip('/'),
+                result["verify_url"],
+            )
+
         return jsonify(result), status_code
 
     except Exception as exc:
@@ -593,7 +636,6 @@ def admin_approve(registration_id):
 
         result = approve_registration(registration_id)
 
-        # Fix 2: honour http_status returned by the service layer
         status_code = result.pop("http_status", 200)
         return jsonify(result), status_code
 
@@ -650,15 +692,9 @@ def admin_revoke_issuer(institution_id):
 def resolve_did_endpoint(did: str):
     """
     Resolve a DID to its W3C-compliant DID Document.
-
-    The document is constructed directly from did_registry so this endpoint
-    works even if w3c_did_service is unavailable. Content-Type is set to
-    application/did+ld+json per the W3C DID spec.
-
     W3C DID Core 1.0 — https://www.w3.org/TR/did-core/
     """
     try:
-        import re
         if not re.match(r"^did:[a-z]+:[a-zA-Z0-9._\-:]+$", did):
             return jsonify({"error": "Invalid DID format"}), 400
 
@@ -690,7 +726,6 @@ def resolve_did_endpoint(did: str):
         registered_at       = row.get("registered_at", "")
         public_key_b64      = row.get("public_key", "")
 
-        # ── W3C DID Document (DID Core 1.0) ──────────────────────────────────
         document = {
             "@context": [
                 "https://www.w3.org/ns/did/v1",
@@ -741,7 +776,6 @@ def resolve_did_endpoint(did: str):
 @app.route("/did/view/<path:did>", methods=["GET"])
 def view_did_endpoint(did: str):
     try:
-        import re
         if not re.match(r"^did:[a-z]+:[a-zA-Z0-9._\-:]+$", did):
             return "Invalid DID format", 400
 
@@ -800,7 +834,7 @@ h2{margin:0 0 4px;font-size:20px}.sub{font-size:13px;color:#666;margin-bottom:20
 </div></body></html>""", subject=subject, name=name, address=address, did=did)
 
 
-# ── Institution dashboard ──────────────────────────────────────────────────────
+# ── Institution dashboard ─────────────────────────────────────────────────────
 
 @app.route("/institution/<path:did>", methods=["GET"])
 def institution_dashboard(did: str):
