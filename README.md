@@ -10,6 +10,7 @@ Academic and professional credentials are trivially forgeable. Existing verifica
 
 SkillChain addresses this by anchoring a cryptographic fingerprint of every certificate directly on the Algorand blockchain at issuance time. Verification does not depend on contacting the issuing institution — it requires only the original certificate file and public blockchain state. The identity layer adds a second guarantee: not just that a certificate is authentic, but that the person presenting it is the person it was issued to, confirmed via DigiLocker's Aadhaar-backed identity.
 
+
 ---
 
 ## System Architecture
@@ -62,6 +63,7 @@ The application is a Flask API with eight Python service modules, each with a si
 - `vault_client.py` — HashiCorp Vault KV v2 integration for key storage
 - `ipfs_service.py` — Pinata pinning with three-gateway retry fallback
 - `queue_service.py` — in-memory batch anchoring queue with background thread
+- `validation_service.py` — multi-layer credential validation pipeline inspired by Decouchant et al., combining                                       cryptographic verification, issuer trust evaluation, and identity binding checks
 
 ### Database Design
 
@@ -127,6 +129,21 @@ Institution DIDs follow the pattern `did:skillchain:<sha256_prefix>` and comply 
 
 An on-chain ARC4 smart contract (`DIDRegistry` in `smart_contracts/did_contract.py`) exists and stores DID documents in Algorand Box Storage, with per-institution write access controlled by transaction sender identity. This contract is not yet integrated into the main application flow — it operates as a parallel proof-of-concept.
 
+### Validation Layer (Decouchant Model Alignment)
+
+SkillChain’s verification pipeline follows a multi-layer validation approach inspired by Decouchant’s research on decentralised trust systems. Rather than relying on a single signal, verification is composed of independent layers:
+
+- **Cryptographic integrity** — SHA-256 hash matching and HMAC recomputation ensure the certificate has not been altered.
+- **Provenance verification** — Ed25519 signatures confirm issuance by a valid institution DID.
+- **Anchoring layer** — Algorand transaction inclusion guarantees temporal integrity and immutability.
+- **Identity binding** — DigiLocker-derived identity DIDs confirm ownership of the credential.
+- **Issuer state validation** — revocation status and registry presence are checked at verification time.
+
+These layers are evaluated independently and aggregated into the trust score, preventing any single point of failure from compromising verification correctness.
+
+---
+
+
 ---
 
 ## Feature Inventory
@@ -172,6 +189,15 @@ An on-chain ARC4 smart contract (`DIDRegistry` in `smart_contracts/did_contract.
 **What it does:** Three-stage flow — institution submits name/email/domain → email token verification → admin approval → DID registration and wallet provisioning.
 
 **Implementation:** Registration tokens are `secrets.token_hex(16)`. API keys are `secrets.token_hex(32)`, SHA-256 hashed before DB storage; the plaintext key is returned once and never re-stored. Institution names are normalised (`strip().lower()` + whitespace collapse) before all DB operations to prevent duplicate registrations under different capitalisation. On approval, a fresh Algorand keypair is generated and either stored in Vault (production) or AES-256-GCM encrypted in `did_registry` (dev mode).
+### Intelligent Institution Approval (ML Decision Layer)
+
+**What it does:** Augments the manual admin approval process with a machine learning–assisted decision layer to evaluate institution legitimacy.
+
+**Implementation:** The current system uses manual approval gated by email/domain verification. A planned ML layer operates on institution metadata (domain reputation, historical issuance patterns, registry consistency, and anomaly signals) to assign a risk score and recommend approval or rejection.
+
+**Design intent:** The ML layer does not replace admin control — it acts as a decision-support system, reducing human bias and scaling onboarding without weakening trust guarantees.
+
+**Status:** Not yet active in production; designed as an extension point over the existing `pending_registrations` workflow.
 
 **Location:** `app.py`, `did_service.py → request_registration(), approve_registration()`
 
@@ -195,7 +221,8 @@ An on-chain ARC4 smart contract (`DIDRegistry` in `smart_contracts/did_contract.
 
 **What it does:** Abstracts all private key operations so keys never exist outside the innermost signing scope.
 
-**Implementation:** `sign_transaction()` and `sign_credential_hash()` follow a fetch → use → `del` pattern with `try/finally` guaranteeing deletion even on exceptions. When `VAULT_ENABLED=true`, keys are fetched from HashiCorp Vault KV v2 at `secret/skillchain/{institution_id}` with no fallback. When `VAULT_ENABLED=false`, per-institution keys are AES-256-GCM decrypted from `did_registry` (key encrypted at approval time using `KEY_ENCRYPTION_KEY` env var).
+**Implementation:** `sign_transaction()` and `sign_credential_hash()` follow a fetch → use → `del` pattern with `try/finally` guaranteeing deletion even on exceptions. When `VAULT_ENABLED=true`, keys are fetched from HashiCorp Vault KV v2 at `secret/skillchain/{institution_id}` with no fallback. When `VAULT_ENABLED=false`, per-institution keys are AES-256-GCM decrypted from `did_registry` (key encrypted at approval time using `KEY_ENCRYPTION_KEY` env var).Vault usage is strict and non-optional in production mode. When enabled, private keys never exist in application memory outside the immediate signing scope and are never persisted in the database. Each institution is assigned a unique key path, enabling isolation, revocation, and future key rotation without cross-tenant risk.
+
 
 **Location:** `signing_service.py`, `vault_client.py`, `key_vault.py`
 
