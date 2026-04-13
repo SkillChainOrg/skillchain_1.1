@@ -798,6 +798,8 @@ function showIssueResult(data) {
 // progress. When anchoring completes we surface real tx_ids and a QR code.
 // ─────────────────────────────────────────────────────────────────────────────
 function showBatchComplete(jobs) {
+  localStorage.removeItem('lastBatchId');
+  localStorage.removeItem('lastBatchApiKey');
   const el       = document.getElementById('issue-result');
   const anchored = jobs.filter(j => j.status === 'anchored');
   const failed   = jobs.filter(j => j.status === 'failed' || (j.error && j.status !== 'anchored'));
@@ -906,7 +908,7 @@ async function pollBatchStatus(batchId, apiKey, totalQueued) {
 // issueCert — main submit handler
 // ─────────────────────────────────────────────────────────────────────────────
 async function issueCert() {
-  // FIX (Flaw 2): Guard against confirmed-unfunded wallet before any network call.
+  // Guard: confirmed-unfunded wallet → bail immediately.
   if (_walletFunded === false) {
     showIssueResult({
       error: 'Institution wallet is not funded. Send at least 0.2 ALGO to the address shown above, then click "Refresh balance".'
@@ -924,6 +926,39 @@ async function issueCert() {
   setLoading('issue', true);
   document.getElementById('qr-section').style.display = 'none';
 
+  // ── TASK B: single non-ZIP file → bypass batch queue, call /issue directly ──
+  const isSingle = files.length === 1 && !files[0].name.endsWith('.zip');
+
+  if (isSingle) {
+    const form = new FormData();
+    form.append('certificate', files[0]);   // /issue expects field name "certificate"
+    form.append('doc_type', docType);
+    form.append('issued_to_name', holderName);
+
+    try {
+      const res  = await fetch(`${BASE_URL}/issue`, {
+        method:  'POST',
+        headers: { 'X-API-Key': apiKey },
+        body:    form,
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        showIssueResult({ error: data.error || 'Issuance failed' });
+      } else {
+        showIssueResult(data);                          // immediate success
+        localStorage.removeItem('lastBatchId');         // no batch to recover
+        localStorage.removeItem('lastBatchApiKey');
+      }
+    } catch (e) {
+      showIssueResult({ error: `Network error: ${e.message}` });
+    }
+
+    setLoading('issue', false);
+    return;   // ← done; skip the batch path entirely
+  }
+
+  // ── Batch path (multiple files or ZIP) ───────────────────────────────────────
   const form = new FormData();
   if (files.length === 1 && files[0].name.endsWith('.zip')) {
     form.append('certificates', files[0]);
@@ -944,8 +979,10 @@ async function issueCert() {
     if (!res.ok) {
       showIssueResult({ error: data.error || 'Batch failed' });
     } else {
-      // FIX (Flaw 1 + Flaw 5): Show a real "queued" state with a live progress
-      // indicator. Start polling so the UI updates when anchoring completes.
+      // TASK A: persist so polling survives a refresh
+      localStorage.setItem('lastBatchId',     data.batch_id);
+      localStorage.setItem('lastBatchApiKey', apiKey);
+
       const el = document.getElementById('issue-result');
       el.style.display = 'block';
       el.className     = 'result warning';
@@ -1360,6 +1397,48 @@ function loadDemoFile(type) {
     handleFile(inp, 'verify');
   });
 }
+// ── TASK A: Restore batch polling after page refresh ─────────────────────────
+window.addEventListener("load", () => {
+  const batchId = localStorage.getItem("lastBatchId");
+  const apiKey  = localStorage.getItem("lastBatchApiKey");
+  if (!batchId || !apiKey) return;
+
+  // Prefill the API key so the user sees the right context
+  const keyInput = document.getElementById('issue-apikey');
+  if (keyInput && !keyInput.value) keyInput.value = apiKey;
+
+  // Restore the queued UI — the DOM elements batch-progress and batch-bar
+  // must exist before pollBatchStatus starts writing into them.
+  goto('issue');
+  const el = document.getElementById('issue-result');
+  el.style.display = 'block';
+  el.className     = 'result warning';
+  el.innerHTML     = `
+    <div style="font-size:15px;font-weight:600;color:var(--amber);margin-bottom:10px">
+      ⏳ Resuming batch — reconnecting to Algorand node…
+    </div>
+    <div class="check-row">
+      <span class="check-icon">✓</span>
+      <span class="check-label">Batch ID</span>
+      <span class="check-value" style="font-family:monospace">${batchId}</span>
+    </div>
+    <div class="check-row">
+      <span class="check-icon">⛓</span>
+      <span class="check-label">Anchoring status</span>
+      <span class="check-value" id="batch-progress">Reconnecting…</span>
+    </div>
+    <div class="batch-progress-bar-wrap">
+      <div class="batch-progress-bar" id="batch-bar" style="width:0%"></div>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-top:6px">
+      Page was refreshed. Polling will resume — results will appear shortly.
+    </div>
+  `;
+  document.getElementById('qr-section').style.display = 'none';
+
+  // totalQueued = 0 is fine; the bar and count will update from first poll
+  pollBatchStatus(batchId, apiKey, 0);
+});
 
 // Handle DigiLocker callback redirect
 const params = new URLSearchParams(window.location.search);
