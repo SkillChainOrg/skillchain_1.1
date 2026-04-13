@@ -921,7 +921,7 @@ async function approve(id, key, btn) {
           <div class="approval-icon">&#127881;</div>
           <div class="approval-title">Institution Approved</div>
           <div class="check-row"><span class="check-icon">✓</span><span class="check-label">Institution</span><span class="check-value">${data.institution || id}</span></div>
-          <div class="check-row"><span class="check-icon">✓</span><span class="check-label">DID issued</span><span class="check-value" style="font-family:monospace;font-size:10px">${(data.did||'').slice(0,30)}...</span></div>
+          <div class="check-row"><span class="check-icon">✓</span><span class="check-label">DID issued</span><span class="check-value" style="font-family:monospace;font-size:10px"><a href="/did/view/${encodeURIComponent(data.did || '')}" target="_blank" style="color:#2563eb;text-decoration:none">${data.did || '—'}</a></span></div>
           <div style="font-size:12px;color:#1e3a8a;font-weight:600;margin:12px 0 4px">&#127968; Algorand Wallet Address</div>
           <div class="wallet-addr-display">${walletAddr || '—'}</div>
           <div style="font-size:12px;color:var(--green);font-weight:600;margin:10px 0 4px">&#128273; API Key — share securely with the institution</div>

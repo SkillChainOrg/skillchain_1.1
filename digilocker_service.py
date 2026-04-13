@@ -19,8 +19,8 @@ fully self-contained simulation that:
 MOCK FLOW
 ---------
 1. /digilocker/start
-       → create_digilocker_request()
-       → stores a fake session in _FAKE_DIGILOCKER_DB
+       → create_digilocker_request(redirect_url, user_name)
+       → stores user-provided name in _FAKE_DIGILOCKER_DB keyed by request_id
        → returns request_id + a fake redirect URL
 
 2. /digilocker/callback?id=<request_id>
@@ -31,7 +31,7 @@ MOCK FLOW
 
 3. /digilocker/verify  (identity-only — document/cert layer is a separate concern)
        → verify_with_identity()
-       → reads user details from the mock store
+       → reads user details from the per-session mock store
        → normalises name, calls bind_identity() → DID
        → returns identity_did, digilocker_id, name
 
@@ -62,9 +62,7 @@ log = logging.getLogger(__name__)
 
 _FAKE_DIGILOCKER_DB: dict = {}
 
-# Fixed demo identity.  Change these constants (or read them from env vars) to
-# simulate a different verified user in the demo environment.
-_DEMO_USER_NAME = "Aarav Sharma"
+# ── NO hardcoded demo identity. user_name is always caller-supplied. ──────────
 
 
 # ── Mock helpers (SWAP THESE for real Setu calls) ─────────────────────────────
@@ -73,12 +71,18 @@ _DEMO_USER_NAME = "Aarav Sharma"
 # real Setu API credentials.  The public API and all route handlers stay the
 # same.
 
-def _mock_create_request(redirect_url: str) -> dict:
+def _mock_create_request(redirect_url: str, user_name: str) -> dict:
     """
     Simulate a Setu POST /api/digilocker call.
 
-    Generates a fresh session, pre-populates the in-memory DB with a demo
-    user (auto-authenticated), and returns the same shape Setu would.
+    Generates a fresh session keyed by request_id, stores the caller-supplied
+    user_name (no fallback to any global constant), and returns the same shape
+    Setu would.
+
+    Args:
+        redirect_url: URL the real DigiLocker would redirect to post-consent.
+        user_name:    Name provided by the user at session start.  Required —
+                      the session will be rejected at verify time if missing.
 
     ── REAL SETU REPLACEMENT ─────────────────────────────────────────────────
     import requests, os
@@ -105,14 +109,16 @@ def _mock_create_request(redirect_url: str) -> dict:
     digilocker_id = f"DL-{request_id[:8]}"
 
     _FAKE_DIGILOCKER_DB[request_id] = {
-        "name":          _DEMO_USER_NAME,
+        "name":          user_name,
         "digilocker_id": digilocker_id,
         # Auto-authenticate: simulates the user clicking "Allow" in DigiLocker.
         "status":        "authenticated",
     }
 
-    log.info("[MOCK] DigiLocker session created: request_id=%s  digilocker_id=%s",
-             request_id, digilocker_id)
+    log.info(
+        "[MOCK] DigiLocker session created: request_id=%s  digilocker_id=%s  name=%r",
+        request_id, digilocker_id, user_name,
+    )
 
     return {
         "request_id":     request_id,
@@ -126,9 +132,9 @@ def _mock_get_status(request_id: str) -> dict:
     """
     Simulate a Setu GET /api/digilocker/{id} call.
 
-    Returns status + user details from the in-memory store.  Because the mock
-    auto-authenticates at creation time, this always returns "authenticated"
-    for a known request_id — no polling required.
+    Returns status + user details from the per-session store.  Because the
+    mock auto-authenticates at creation time, this always returns
+    "authenticated" for a known request_id — no polling required.
 
     ── REAL SETU REPLACEMENT ─────────────────────────────────────────────────
     import requests, os
@@ -167,16 +173,21 @@ def _mock_get_status(request_id: str) -> dict:
 # Routes import only these names.  None of the routes change when swapping to
 # real Setu API calls; only the private helpers above change.
 
-def create_digilocker_request(redirect_url: str) -> dict:
+def create_digilocker_request(redirect_url: str, user_name: str = "") -> dict:
     """
     Start a DigiLocker session.
+
+    Args:
+        redirect_url: Post-consent redirect URL.
+        user_name:    Name as entered by the user on the frontend.
+                      Must be non-empty; caller is responsible for validation.
 
     Returns:
         request_id      — opaque session token (pass to callback + verify)
         digilocker_url  — URL to redirect or display to the user
         expires_at      — ISO-8601 session expiry timestamp
     """
-    return _mock_create_request(redirect_url)
+    return _mock_create_request(redirect_url, user_name)
 
 
 def get_request_status(request_id: str) -> dict:
@@ -199,9 +210,11 @@ def ensure_mock_session(request_id: str) -> dict:
     missing from the in-memory store (e.g. the Flask server restarted between
     /start and /callback, wiping _FAKE_DIGILOCKER_DB).
 
-    Instead of returning 403 and killing the presentation, this re-creates
-    the session deterministically — same request_id always produces the same
-    digilocker_id and demo name — so the rest of the flow continues unchanged.
+    Because we no longer have a global demo name, a restarted-server fallback
+    produces an empty name.  The /verify step will then return a 422 with a
+    clear message prompting the user to restart the flow.  This is correct
+    behaviour: in production, Setu sessions survive server restarts anyway, so
+    this edge case disappears entirely.
 
     This function should NOT exist in the real Setu integration (sessions live
     on Setu's servers and survive our restarts).  Remove it — or make it a
@@ -213,13 +226,14 @@ def ensure_mock_session(request_id: str) -> dict:
     # two requests arrive simultaneously for the same id).
     if request_id not in _FAKE_DIGILOCKER_DB:
         _FAKE_DIGILOCKER_DB[request_id] = {
-            "name":          _DEMO_USER_NAME,
+            # No hardcoded name here — empty string signals a stale/restarted session.
+            "name":          "",
             "digilocker_id": digilocker_id,
             "status":        "authenticated",
         }
-        log.info(
+        log.warning(
             "[MOCK] Session re-created at callback (server likely restarted): "
-            "request_id=%s  digilocker_id=%s",
+            "request_id=%s  digilocker_id=%s  — name is empty, flow must restart",
             request_id, digilocker_id,
         )
 
@@ -232,7 +246,7 @@ def _get_digilocker_user_details(request_id: str) -> dict:
 
     Internal helper consumed by verify_with_identity.  Callers expect:
         id   — stable DigiLocker user identifier (identity anchor key)
-        name — government-verified Aadhaar name
+        name — government-verified Aadhaar name (user-provided in mock)
     """
     return _mock_get_status(request_id).get("user", {})
 
@@ -292,7 +306,8 @@ def verify_with_identity(request_id: str) -> dict:
             "success": False,
             "reason": (
                 "DigiLocker session returned incomplete identity data. "
-                "The session may have expired or consent was not granted."
+                "The session may have expired, the server may have restarted, "
+                "or consent was not granted. Please restart the DigiLocker flow."
             ),
         }
 

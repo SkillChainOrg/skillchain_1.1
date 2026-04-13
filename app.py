@@ -225,13 +225,29 @@ def batch_status(batch_id):
 
 # ── DigiLocker ────────────────────────────────────────────────────────────────
 
+# ── PATCH: replace your existing digilocker_start() in app.py with this ──────
+#
+# The only change vs. the original is that we now read "name" from the
+# request body and forward it to create_digilocker_request().
+# Every other route in app.py is unchanged.
+
 @app.route("/digilocker/start", methods=["POST"])
 def digilocker_start():
     try:
-        redirect_url = (request.json or {}).get(
+        body         = request.json or {}
+        redirect_url = body.get(
             "redirect_url", request.url_root + "digilocker/callback"
         )
-        result = create_digilocker_request(redirect_url)
+        user_name = body.get("name", "").strip()
+
+        if not user_name:
+            return jsonify({"error": "name is required to start a DigiLocker session"}), 400
+
+        # Pass user_name into the service so it is stored against this request_id.
+        # When the real Setu integration is active, user_name is ignored here
+        # because the name comes from DigiLocker itself — but the parameter
+        # signature stays the same so no other code changes.
+        result = create_digilocker_request(redirect_url, user_name)
         result["digilocker_url"] = f"/kyc-consent?id={result['request_id']}"
         return jsonify(result)
     except Exception as exc:
