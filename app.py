@@ -125,10 +125,6 @@ def issue_batch():
         if not institution:
             return jsonify({"error": "Invalid or missing API key"}), 401
 
-        zip_file = request.files.get("certificates")
-        if not zip_file:
-            return jsonify({"error": "No zip file uploaded"}), 400
-
         doc_type = request.form.get("doc_type", "academic")
 
         inst_id = (
@@ -137,7 +133,6 @@ def issue_batch():
             else None
         )
 
-        # Fix 3: wallet readiness check
         inst_address = institution.get("address") or institution.get("institution_address")
         if inst_address and not is_wallet_ready(inst_address):
             return jsonify({"error": "Institution wallet not funded"}), 400
@@ -145,58 +140,120 @@ def issue_batch():
         batch_id = secrets.token_hex(8)
         jobs     = []
 
-        with zipfile.ZipFile(zip_file) as zf:
-            cert_meta: dict = {}
-            if "metadata.json" in zf.namelist():
-                try:
-                    cert_meta = _json.loads(zf.read("metadata.json").decode())
-                except Exception as exc:
-                    log.warning("metadata.json in ZIP is malformed: %s", exc)
+        # ── NEW: detect upload mode ───────────────────────────────────────────
+        # Priority: explicit multi-file upload > ZIP fallback
+        direct_files = request.files.getlist("files")   # NEW – multi-file list
+        zip_file     = request.files.get("certificates") # existing ZIP field
 
-            cert_files = [
-                f for f in zf.namelist()
-                if f.endswith((".png", ".jpg", ".jpeg", ".pdf"))
-                and not f.startswith("__MACOSX")
-            ]
-
-            if len(cert_files) > 500:
+        if direct_files:
+            # ── NEW BRANCH: multiple files uploaded directly ──────────────────
+            if len(direct_files) > 500:                 # NEW – cap at 500
                 return jsonify({"error": "Max 500 per batch"}), 400
 
-            for filename in cert_files:
+            ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf"}  # NEW
+
+            for upload in direct_files:                 # NEW
+                filename = upload.filename or ""
+                ext      = os.path.splitext(filename)[1].lower()
+
+                if ext not in ALLOWED_EXTENSIONS:       # NEW – skip bad types
+                    jobs.append({
+                        "filename": filename,
+                        "error":    f"Unsupported file type: {ext}",
+                        "status":   "skipped",
+                    })
+                    continue
+
                 try:
-                    file_bytes = zf.read(filename)
-                    cert_hash  = normalize_and_hash(file_bytes)
+                    file_bytes  = upload.read()                         # NEW
+                    cert_hash   = normalize_and_hash(file_bytes)        # reused
                     del file_bytes
 
-                    signature = sign_credential(cert_hash, institution_id=inst_id)
+                    signature   = sign_credential(cert_hash, institution_id=inst_id)  # reused
 
-                    meta        = cert_meta.get(filename, {})
                     basename    = os.path.splitext(os.path.basename(filename))[0]
-                    cert_number = meta.get("cert_number") or basename
+                    cert_number = basename                              # NEW – no metadata.json in direct mode
 
-                    issued_to_name = meta.get("issued_to_name", "")
-                    issued_to_hash = (
-                        hashlib.sha256(issued_to_name.strip().lower().encode()).hexdigest()
-                        if issued_to_name
-                        else None
-                    )
-
-                    jobs.append({
+                    jobs.append({                                       # same shape as ZIP branch
                         "cert_hash":   cert_hash,
                         "signature":   signature,
                         "filename":    filename,
                         "doc_type":    doc_type,
                         "cert_number": cert_number,
-                        "issued_to":   issued_to_hash,
+                        "issued_to":   None,  # not available without per-file metadata
                     })
-                except Exception as e:
+
+                except Exception as e:                                  # NEW – skip, don't crash
+                    log.warning("Skipping %s in direct batch: %s", filename, e)
                     jobs.append({
                         "filename": filename,
                         "error":    str(e),
                         "status":   "hash_failed",
                     })
 
-        queue_batch(batch_id, jobs, institution)
+        elif zip_file:
+            # ── EXISTING BRANCH: ZIP upload (unchanged) ───────────────────────
+            with zipfile.ZipFile(zip_file) as zf:
+                cert_meta: dict = {}
+                if "metadata.json" in zf.namelist():
+                    try:
+                        cert_meta = _json.loads(zf.read("metadata.json").decode())
+                    except Exception as exc:
+                        log.warning("metadata.json in ZIP is malformed: %s", exc)
+
+                cert_files = [
+                    f for f in zf.namelist()
+                    if f.endswith((".png", ".jpg", ".jpeg", ".pdf"))
+                    and not f.startswith("__MACOSX")
+                ]
+
+                if len(cert_files) > 500:
+                    return jsonify({"error": "Max 500 per batch"}), 400
+
+                for filename in cert_files:
+                    try:
+                        file_bytes = zf.read(filename)
+                        cert_hash  = normalize_and_hash(file_bytes)
+                        del file_bytes
+
+                        signature = sign_credential(cert_hash, institution_id=inst_id)
+
+                        meta        = cert_meta.get(filename, {})
+                        basename    = os.path.splitext(os.path.basename(filename))[0]
+                        cert_number = meta.get("cert_number") or basename
+
+                        issued_to_name = meta.get("issued_to_name", "")
+                        issued_to_hash = (
+                            hashlib.sha256(issued_to_name.strip().lower().encode()).hexdigest()
+                            if issued_to_name
+                            else None
+                        )
+
+                        jobs.append({
+                            "cert_hash":   cert_hash,
+                            "signature":   signature,
+                            "filename":    filename,
+                            "doc_type":    doc_type,
+                            "cert_number": cert_number,
+                            "issued_to":   issued_to_hash,
+                        })
+                    except Exception as e:
+                        jobs.append({
+                            "filename": filename,
+                            "error":    str(e),
+                            "status":   "hash_failed",
+                        })
+
+        else:
+            # ── NEW: no files provided at all ─────────────────────────────────
+            return jsonify({
+                "error": "No files uploaded. Use 'files' (multi-file) or 'certificates' (ZIP)."
+            }), 400
+
+        if not jobs:                                                    # NEW – nothing to queue
+            return jsonify({"error": "No valid files found in the upload"}), 400
+
+        queue_batch(batch_id, jobs, institution)  # unchanged
 
         return jsonify({
             "batch_id":       batch_id,
@@ -204,6 +261,8 @@ def issue_batch():
             "failed_at_hash": len([j for j in jobs if "error" in j]),
             "status_url":     f"/batch/status/{batch_id}",
             "message":        "Certificates hashed and queued for Algorand anchoring",
+            # NEW field – tells caller which mode was used
+            "upload_mode":    "direct" if direct_files else "zip",
         })
 
     except Exception as exc:

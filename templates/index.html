@@ -322,13 +322,13 @@
     </div>
     <label>Institution API key</label>
     <input type="password" id="issue-apikey" placeholder="Your institution API key" oninput="checkIssueReady()">
-    <label>Certificate file (PNG / JPG)</label>
+    <label>Certificates (upload multiple or ZIP)</label>
     <div class="file-drop" id="issue-drop" onclick="document.getElementById('issue-file').click()">
       <div class="file-icon">📄</div>
       <div class="file-hint">Click to upload or drag and drop</div>
       <div class="file-name" id="issue-filename"></div>
     </div>
-    <input type="file" id="issue-file" accept=".png,.jpg,.jpeg" style="display:none" onchange="handleFile(this,'issue')">
+    <input type="file" id="issue-file" multiple accept=".png,.jpg,.jpeg,.pdf,.zip" style="display:none" onchange="handleFile(this,'issue')">
     <label>Holder name (as on Aadhaar)</label>
     <input type="text" id="issue-name" placeholder="Full name of certificate holder" oninput="checkIssueReady()">
     <label>Document type</label>
@@ -525,19 +525,33 @@ function goto(page) {
 }
 
 function handleFile(input, prefix) {
-  const file = input.files[0];
-  if (!file) return;
-  document.getElementById(prefix + '-filename').textContent = file.name;
+  const files = input.files;
+  if (!files.length) return;
+
+  const nameEl = document.getElementById(prefix + '-filename');
+
+  if (files.length === 1) {
+    nameEl.textContent = files[0].name;
+  } else {
+    nameEl.textContent = files.length + " files selected";
+  }
+
   document.getElementById(prefix + '-drop').classList.add('has-file');
-  if (prefix === 'verify') document.getElementById('verify-btn').disabled = false;
-  if (prefix === 'issue') checkIssueReady();
+
+  if (prefix === 'verify') {
+    document.getElementById('verify-btn').disabled = false;
+  }
+
+  if (prefix === 'issue') {
+    checkIssueReady();
+  }
 }
 
 function checkIssueReady() {
   const key  = document.getElementById('issue-apikey').value.trim();
   const name = document.getElementById('issue-name').value.trim();
-  const file = document.getElementById('issue-file').files[0];
-  document.getElementById('issue-btn').disabled = !(key && name && file);
+  const files = document.getElementById('issue-file').files;
+  document.getElementById('issue-btn').disabled = !(key && name && files.length);
 }
 
 function setLoading(prefix, on) {
@@ -655,25 +669,55 @@ function showIssueResult(data) {
 }
 
 async function issueCert() {
-  const file       = document.getElementById('issue-file').files[0];
+  const files      = document.getElementById('issue-file').files;
   const apiKey     = document.getElementById('issue-apikey').value.trim();
   const holderName = document.getElementById('issue-name').value.trim();
   const docType    = document.getElementById('issue-doctype').value;
-  if (!file || !apiKey || !holderName) return;
+
+  if (!files.length || !apiKey || !holderName) return;
+
   setLoading('issue', true);
   document.getElementById('qr-section').style.display = 'none';
+
   const form = new FormData();
-  form.append('certificate', file);
-  form.append('doc_type', docType);
-  form.append('issued_to_name', holderName);
+
+  // 🔥 Detect ZIP vs multi-file
+  if (files.length === 1 && files[0].name.endsWith(".zip")) {
+    form.append("certificates", files[0]); // ZIP mode
+  } else {
+    for (let i = 0; i < files.length; i++) {
+      form.append("files", files[i]); // multi-file mode
+    }
+  }
+
+  form.append("doc_type", docType);
+  form.append("issued_to_name", holderName);
+
   try {
-    const res  = await fetch(`${BASE_URL}/issue`, { method: 'POST', headers: { 'X-API-Key': apiKey }, body: form });
+    const res  = await fetch(`${BASE_URL}/issue/batch`, {
+      method: 'POST',
+      headers: { 'X-API-Key': apiKey },
+      body: form
+    });
+
     const data = await res.json();
-    if (!res.ok && !data.success) showIssueResult({ error: data.error || `Server error ${res.status}` });
-    else showIssueResult(data);
-  } catch(e) {
+
+    if (!res.ok) {
+      showIssueResult({ error: data.error || "Batch failed" });
+    } else {
+      showIssueResult({
+        success: true,
+        issued_by: "Batch",
+        cert_hash: data.batch_id,
+        tx_id: data.batch_id,
+        ipfs_cid: null
+      });
+    }
+
+  } catch (e) {
     showIssueResult({ error: `Network error: ${e.message}` });
   }
+
   setLoading('issue', false);
 }
 
