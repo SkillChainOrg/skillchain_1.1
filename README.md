@@ -4,6 +4,21 @@
 
 ---
 
+## 🌐 Live Deployment
+
+SkillChain is currently deployed and running.
+
+🔗 **Live API:**  
+https://skillchain11-production.up.railway.app/
+
+### Key Endpoints
+
+- POST `/issue`
+- POST `/verify`
+- GET `/health`
+
+> Current deployment runs in single-worker mode to maintain queue consistency.
+
 ## 📌 Response to Panel Feedback
 
 This README was restructured in direct response to panel feedback received after the initial submission. Every point has been addressed explicitly:
