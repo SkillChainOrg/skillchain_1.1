@@ -285,6 +285,10 @@ Post-MVP, adding on-chain DID registration and revocation multiplies transaction
 <summary>View Mermaid Source</summary>
 
 ```mermaid
+<details>
+<summary>View Mermaid Source</summary>
+
+```mermaid
 graph LR
 
 subgraph Client
@@ -328,7 +332,9 @@ E --> I
 E --> G
 
 F --> J
-</details>```
+</details>
+
+```
 
 
 
