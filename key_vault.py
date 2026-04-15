@@ -1,4 +1,3 @@
-```python
 """
 key_vault.py — AES-256-GCM symmetric key encryption for dev-mode fallback.
 
