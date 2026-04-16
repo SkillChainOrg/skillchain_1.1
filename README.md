@@ -415,6 +415,8 @@ Institution DIDs follow the pattern `did:skillchain:<sha256_prefix>` and comply 
 
 An on-chain ARC4 smart contract (`DIDRegistry` in `smart_contracts/did_contract.py`) exists and stores DID documents in Algorand Box Storage, with per-institution write access controlled by transaction sender identity. This contract is not yet integrated into the main application flow — it operates as a parallel proof-of-concept.
 
+The DID system follows a registry pattern, where each institution’s identity is keyed by its wallet address. This enables efficient indexer-based queries and avoids full transaction scans, making identity resolution scalable as the number of issuers grows.
+
 ### Validation Layer (Decouchant Model Alignment)
 
 SkillChain's verification pipeline follows a multi-layer validation approach inspired by Decouchant's research on decentralised trust systems. Rather than relying on a single signal, verification is composed of independent layers:
