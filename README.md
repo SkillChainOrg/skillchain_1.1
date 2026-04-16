@@ -296,61 +296,6 @@ Post-MVP, adding on-chain DID registration and revocation multiplies transaction
   <img src="./assets/architecture.png" alt="SkillChain Architecture" width="700"/>
 </p>
  
-<details>
-<summary>View Mermaid Source</summary>
-
-```mermaid
-<details>
-<summary>View Mermaid Source</summary>
-
-```mermaid
-graph LR
-
-subgraph Client
-    A[Institution]
-    B[Verifier]
-end
-
-subgraph API
-    C[Flask API]
-end
-
-subgraph Core
-    D[Issuance]
-    E[Verification]
-    F[Identity]
-end
-
-subgraph Storage
-    G[(PostgreSQL)]
-end
-
-subgraph External
-    H[Algorand]
-    I[IPFS]
-    J[DigiLocker]
-end
-
-A --> C
-B --> C
-
-C --> D
-C --> E
-C --> F
-
-D --> H
-D --> I
-D --> G
-
-E --> H
-E --> I
-E --> G
-
-F --> J
-</details>
-
-```
-
 
 
 
