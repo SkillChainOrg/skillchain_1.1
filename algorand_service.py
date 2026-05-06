@@ -9,12 +9,9 @@ CHANGES (PostgreSQL migration):
   - Row access changed from positional index to dict keys.
   - Added explicit cursor management (cur = conn.cursor()).
 """
-
-import base64
+import base64, json, logging
 import hashlib
 import hmac as hmac_lib
-import json
-import logging
 import os
 import time
 
@@ -29,9 +26,10 @@ from db import get_db_connection, dict_cursor
 from ipfs_service import pin_certificate_metadata, fetch_certificate_metadata, pin_with_retry
 from signing_service import sign_transaction, get_issuer_address
 
+log = logging.getLogger(__name__)
 load_dotenv()
 
-log = logging.getLogger(__name__)
+
 
 HMAC_SECRET = os.getenv("HMAC_SECRET")
 if not HMAC_SECRET:
@@ -48,7 +46,29 @@ INDEXER_TOKEN = ""
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
+def safe_decode_note(note_raw):
+    if not note_raw:
+        return None
 
+    try:
+        # Case 1: already bytes
+        if isinstance(note_raw, (bytes, bytearray)):
+            return json.loads(bytes(note_raw).decode())
+
+        # Case 2: string
+        if isinstance(note_raw, str):
+            # Try base64 safely
+            try:
+                decoded = base64.b64decode(note_raw, validate=True)
+                return json.loads(decoded.decode())
+            except Exception:
+                # Not valid base64 → treat as JSON string
+                return json.loads(note_raw)
+
+    except Exception as e:
+        print("NOTE DECODE ERROR:", note_raw, e)
+        return None
+        
 def init_db():
     """Create the certificates table if it does not exist."""
     conn = get_db_connection()
@@ -257,15 +277,18 @@ def anchor_hash(
 
     hmac_value = generate_hmac(cert_hash)
 
-    issued_by  = institution.get("institution") if isinstance(institution, dict) else str(institution)
-    issuer_did = institution.get("did", "")     if isinstance(institution, dict) else ""
+    # Artisan-first field naming (version 2.0).
+    # Legacy institution certs (v1.0) stored "issued_by" / "issuer_did";
+    # the verify path normalises both via `meta.get("artisan_did") or meta.get("issuer_did")`.
+    artisan_name    = institution.get("institution") if isinstance(institution, dict) else str(institution)
+    artisan_did_val = institution.get("did", "")     if isinstance(institution, dict) else ""
 
     metadata = {
-        "version":     "1.0",
+        "version":     "2.0",
         "cert_hash":   cert_hash,
         "doc_type":    doc_type,
-        "issued_by":   issued_by,
-        "issuer_did":  issuer_did,
+        "artisan":     artisan_name,
+        "artisan_did": artisan_did_val,
         "issued_at":   issued_at,
         "signature":   signature,
         "hmac_value":  hmac_value,
@@ -417,9 +440,11 @@ def _verify_full(
         }
 
     note_raw = txn_obj.get("note", "")
-    try:
-        note = json.loads(base64.b64decode(note_raw).decode())
-    except Exception:
+
+    note = safe_decode_note(note_raw)
+
+    if not note:
+        log.error("Note decode failed | raw=%s", note_raw)
         return {"valid": False, "reason": "Malformed transaction note"}
 
     ipfs_cid_from_note = note.get("cid") or ipfs_cid
@@ -443,7 +468,7 @@ def _verify_full(
     ipfs_hmac  = meta.get("hmac_value", "")
     hmac_ok    = bool(ipfs_hmac and hmac_lib.compare_digest(recomputed, ipfs_hmac))
 
-    # ── Revocation check (PostgreSQL) ──────────────────────────────────────
+    # ── Revocation check — did_registry (institutions) ────────────────────────
     sender_address = txn_obj.get("sender", "")
     conn = get_db_connection()
     cur  = dict_cursor(conn)
@@ -462,8 +487,34 @@ def _verify_full(
         cur.close()
         conn.close()
 
+    # ── Revocation check — artisans (if not found in did_registry) ────────────
+    artisan_row = None
+    if reg_row is None:
+        conn_a = get_db_connection()
+        cur_a  = dict_cursor(conn_a)
+        try:
+            cur_a.execute(
+                "SELECT did, name, status FROM artisans WHERE algorand_wallet = %s",
+                (sender_address,),
+            )
+            artisan_row = cur_a.fetchone()
+        finally:
+            cur_a.close()
+            conn_a.close()
+
     if reg_row and reg_row["revoked"] == 1:
         return {"valid": False, "reason": "issuer_revoked"}
+
+    if artisan_row and artisan_row["status"] != "approved":
+        return {"valid": False, "reason": "artisan_not_approved"}
+
+    # Determine issuer-active flag for trust score
+    if reg_row:
+        issuer_active = not bool(reg_row.get("revoked"))
+    elif artisan_row:
+        issuer_active = artisan_row["status"] == "approved"
+    else:
+        issuer_active = True  # unknown sender — default active (legacy compat)
 
     wallet_version = (
         reg_row["wallet_version"]
@@ -471,7 +522,7 @@ def _verify_full(
         else note.get("wv", 1)
     )
 
-    # ── Ed25519 provenance check ──────────────────────────────────────────
+    # ── Ed25519 provenance check ──────────────────────────────────────────────
     from did_service import verify_provenance
     provenance = verify_provenance(
         sender_address, cert_hash, meta.get("signature", "")
@@ -482,61 +533,77 @@ def _verify_full(
         chain_confirmed=bool(txn_obj.get("confirmed-round")),
         hmac_ok=hmac_ok,
         signature_valid=bool(sig_valid),
-        issuer_active=not bool(reg_row and reg_row.get("revoked")),
+        issuer_active=issuer_active,
         wallet_version=wallet_version,
     )
+
+    # Normalise IPFS metadata keys — support both artisan (v2) and institution (v1) formats
+    artisan_did  = meta.get("artisan_did")  or meta.get("issuer_did")
+    artisan_name = meta.get("artisan")      or meta.get("issued_by")
+
     return {
-        "valid":            True,
-        "hmac_valid":       hmac_ok,
-        "signature_valid":  sig_valid,
-        "wallet_version":   wallet_version,
-        "tx_id":            txn_obj["id"],
-        "confirmed_round":  txn_obj["confirmed-round"],
-        "issued_by":        meta.get("issued_by"),
-        "issuer_did":       meta.get("issuer_did"),
-        "doc_type":         meta.get("doc_type"),
-        "issued_at":        meta.get("issued_at"),
-        "cert_number":      meta.get("cert_number"),
-        "ipfs_cid":         ipfs_cid_from_note,
-        "ipfs_url":         f"https://gateway.pinata.cloud/ipfs/{ipfs_cid_from_note}",
-        "explorer_url":     f"https://testnet.explorer.perawallet.app/tx/{txn_obj['id']}",
-        "trust_score":      trust["score"],
-        "trust_grade":      trust["grade"],
-        "trust_factors":    trust["factors"],
+        "valid":           True,
+        "hmac_valid":      hmac_ok,
+        "signature_valid": sig_valid,
+        "wallet_version":  wallet_version,
+        "tx_id":           txn_obj["id"],
+        "confirmed_round": txn_obj["confirmed-round"],
+        "artisan_did":     artisan_did,
+        "artisan":         artisan_name,
+        "doc_type":        meta.get("doc_type"),
+        "issued_at":       meta.get("issued_at"),
+        "cert_number":     meta.get("cert_number"),
+        "ipfs_cid":        ipfs_cid_from_note,
+        "ipfs_url":        f"https://gateway.pinata.cloud/ipfs/{ipfs_cid_from_note}",
+        "explorer_url":    f"https://testnet.explorer.perawallet.app/tx/{txn_obj['id']}",
+        "trust_score":     trust["score"],
+        "trust_grade":     trust["grade"],
+        "trust_factors":   trust["factors"],
     }
 
 
 def _verify_via_indexer(cert_hash: str) -> dict:
     """Fallback: scan Algorand indexer when cert is not in local DB."""
     address = get_issuer_address()
+
     try:
-        client = get_indexer_client(fallback=False)
+        # ── Get indexer client ─────────────────────────────
         try:
+            client = get_indexer_client(fallback=False)
             txns = client.search_transactions(
-                address=address, note_prefix=b'{"sc":'
+                address=address,
+                note_prefix=b'{"sc":'
             ).get("transactions", [])
         except Exception:
-            # Primary failed — try fallback indexer
             log.warning("_verify_via_indexer: primary indexer failed, trying fallback.")
             client = get_indexer_client(fallback=True)
             txns = client.search_transactions(
-                address=address, note_prefix=b'{"sc":'
+                address=address,
+                note_prefix=b'{"sc":'
             ).get("transactions", [])
 
+        # ── Scan transactions ─────────────────────────────
         for txn in txns:
-            note_raw = txn.get("note", "")
             try:
-                note     = json.loads(base64.b64decode(note_raw).decode())
+                note_raw = txn.get("note", "")
+
+                note = safe_decode_note(note_raw)
+                if not note:
+                    continue
+
                 ipfs_cid = note.get("cid")
                 if not ipfs_cid:
                     continue
+
                 meta = fetch_certificate_metadata(ipfs_cid)
+
                 if meta.get("cert_hash") == cert_hash:
                     return {
                         "valid":           True,
                         "tx_id":           txn["id"],
-                        "confirmed_round": txn["confirmed-round"],
-                        "issued_by":       meta.get("issued_by"),
+                        "confirmed_round": txn.get("confirmed-round"),
+                        "artisan_did":     meta.get("artisan_did") or meta.get("issuer_did"),
+                        "artisan":         meta.get("artisan") or meta.get("issued_by"),
                         "doc_type":        meta.get("doc_type"),
                         "issued_at":       meta.get("issued_at"),
                         "cert_number":     meta.get("cert_number"),
@@ -544,13 +611,15 @@ def _verify_via_indexer(cert_hash: str) -> dict:
                         "source":          "algorand_indexer_fallback",
                         "explorer_url":    f"https://testnet.explorer.perawallet.app/tx/{txn['id']}",
                     }
-            except Exception:
+
+            except Exception as e:
+                log.error("Transaction parse failed: %s | txn=%s", e, txn)
                 continue
+
     except Exception as e:
         return {"valid": False, "reason": f"Indexer error: {str(e)}"}
 
     return {"valid": False, "reason": "Certificate not found"}
-
 
 # ── DigiLocker verification path ──────────────────────────────────────────────
 

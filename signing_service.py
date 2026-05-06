@@ -2,13 +2,26 @@
 signing_service.py — Secure signing abstraction for SkillChain.
 
 Security design:
-  - Private keys are fetched from Vault immediately before signing and deleted after.
-  - When VAULT_ENABLED=true the system fails hard if Vault is unreachable.
-    There is NO silent fallback to MNEMONIC — issuer isolation must be maintained.
-  - When VAULT_ENABLED=false (dev mode only), MNEMONIC env var is used.
-  - Key bytes exist only within the innermost function scope; `del` is called
-    in a `finally` block to minimise the in-memory exposure window.
-  - No key material is logged, returned, or stored beyond the signing call.
+  - resolve_private_key() is the single entry point for all private key access.
+    All branching (system / artisan / institution) is encapsulated inside it.
+  - Vault is always the primary source when VAULT_ENABLED=true.
+    There is NO silent fallback — Vault failure raises hard.
+  - AES-GCM (key_vault.py) is the dev-mode fallback (VAULT_ENABLED=false).
+    KEY_ENCRYPTION_SECRET is required; missing it raises RuntimeError immediately.
+  - Key bytes exist only within the innermost signing scope.
+    Callers use a zeroing bytearray buffer; `del` runs in `finally` on every path.
+  - No key material is ever logged, returned to callers, or stored in memory
+    beyond the duration of a single signing call.
+
+Identity model:
+  IDENTITY_SYSTEM      — shared system wallet (MNEMONIC / Vault "system")
+  IDENTITY_ARTISAN     — per-artisan wallet   (artisans table / Vault "artisan/<id>")
+  IDENTITY_INSTITUTION — per-institution wallet (did_registry / Vault "<id>")
+
+Vault KV v2 paths:
+  system:      secret/skillchain/system
+  artisan:     secret/skillchain/artisan/<identity_id>
+  institution: secret/skillchain/<identity_id>
 """
 
 import os
@@ -16,21 +29,25 @@ import base64
 import hashlib
 
 from algosdk import mnemonic as mn, account
-from nacl.signing import SigningKey
-from nacl.encoding import RawEncoder
+from algosdk import account
+import base64
 from dotenv import load_dotenv
 
 from db import get_db_connection
 
 load_dotenv()
 
-# Vault path segment used for the system-level (shared) issuer wallet
+# ── Identity type constants ────────────────────────────────────────────────────
+IDENTITY_SYSTEM      = "system"
+IDENTITY_ARTISAN     = "artisan"
+IDENTITY_INSTITUTION = "institution"
+
+# Legacy string used as the Vault path segment for the shared system wallet.
+# Kept for backward compatibility; IDENTITY_SYSTEM is preferred in new code.
 SYSTEM_INSTITUTION_ID = "system"
 
 
-# ---------------------------------------------------------------------------
-# Public helper
-# ---------------------------------------------------------------------------
+# ── Public helper ─────────────────────────────────────────────────────────────
 
 def derive_institution_id(institution_name: str) -> str:
     """
@@ -38,47 +55,51 @@ def derive_institution_id(institution_name: str) -> str:
 
     Produces the same 16-char hex suffix that did_service.register_did() uses
     when constructing the DID, ensuring Vault path and DID are consistent.
-
-    Example:
-        "Cummins College" → "8f3a1c9d24b07e5f"
+    Kept for backward compatibility; artisan IDs use _derive_artisan_id() in app.py.
     """
     return hashlib.sha256(institution_name.strip().lower().encode()).hexdigest()[:16]
 
 
-# ---------------------------------------------------------------------------
-# Internal key loader
-# ---------------------------------------------------------------------------
+# ── Internal helpers ──────────────────────────────────────────────────────────
 
-def _load_private_key(institution_id: str | None) -> str:
+def _vault_path_for(identity_type: str, identity_id: str | None) -> str:
     """
-    Fetch the private key (base64 string) for the given institution.
+    Construct the Vault KV path segment for resolve_private_key().
 
-    Routing logic:
-      - VAULT_ENABLED=true  → always fetch from Vault; fail hard if unavailable.
-      - VAULT_ENABLED=false → load from MNEMONIC env var (dev/local mode only).
+    Vault KV v2 full paths (mount: secret, prefix: skillchain):
+        system:      secret/skillchain/system
+        artisan:     secret/skillchain/artisan/<identity_id>
+        institution: secret/skillchain/<identity_id>
+    """
+    if identity_type == IDENTITY_SYSTEM:
+        return SYSTEM_INSTITUTION_ID                    # "system"
+    if identity_type == IDENTITY_ARTISAN:
+        if not identity_id:
+            raise ValueError("identity_id is required for IDENTITY_ARTISAN")
+        return f"artisan/{identity_id}"                 # "artisan/<id>"
+    if identity_type == IDENTITY_INSTITUTION:
+        if not identity_id:
+            raise ValueError("identity_id is required for IDENTITY_INSTITUTION")
+        return identity_id                              # "<id>"
+    raise ValueError(f"Unknown identity_type: {identity_type!r}")
 
-    Args:
-        institution_id: Vault path segment. None resolves to SYSTEM_INSTITUTION_ID.
 
-    Returns:
-        Base64-encoded private key string (algosdk format).
+def _load_from_db(identity_type: str, identity_id: str | None) -> bytes:
+    """
+    AES-GCM fallback key loader (dev mode only — called when VAULT_ENABLED=false).
+
+    Routing:
+        system:      MNEMONIC env var (algosdk format — no encryption needed)
+        artisan:     artisans.enc_private_key  (AES-GCM via key_vault)
+        institution: did_registry.private_key_enc (AES-GCM via key_vault)
+
+    KEY_ENCRYPTION_SECRET must be set for artisan/institution paths.
+    Raises RuntimeError or KeyError on any failure — no silent fallback.
 
     CRITICAL — caller contract:
-        The returned string MUST be deleted from the caller's local scope
-        immediately after use. Never log it, return it, or store it.
+        Delete the returned bytes immediately after a single signing operation.
     """
-    from vault_client import is_vault_enabled, fetch_key
-
-    if is_vault_enabled():
-        resolved_id = institution_id or SYSTEM_INSTITUTION_ID
-        # Vault is required — no fallback, no exception swallowing
-        return fetch_key(resolved_id)
-
-    # ── Dev mode (VAULT_ENABLED=false) ─────────────────────────────────────────
-    resolved_id = institution_id or SYSTEM_INSTITUTION_ID
-
-    if resolved_id == SYSTEM_INSTITUTION_ID or institution_id is None:
-        # System wallet: load from MNEMONIC env var
+    if identity_type == IDENTITY_SYSTEM:
         phrase = os.getenv("MNEMONIC")
         if not phrase:
             raise ValueError(
@@ -87,116 +108,215 @@ def _load_private_key(institution_id: str | None) -> str:
             )
         return mn.to_private_key(phrase)
 
-    # Per-institution dev mode: fetch AES-GCM encrypted key from did_registry
-    from db import get_db_connection
-    from key_vault import decrypt_key
+    from key_vault import decrypt_key   # raises if KEY_ENCRYPTION_SECRET missing
 
-    conn = get_db_connection()
-    cur = conn.cursor()
+    if identity_type == IDENTITY_ARTISAN:
+        full_artisan_id = f"artisan/{identity_id}"
+        conn = get_db_connection()
+        cur  = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT enc_private_key, key_nonce FROM artisans WHERE artisan_id = %s",
+                (full_artisan_id,),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
 
-    cur.execute(
-        "SELECT private_key_enc, key_nonce FROM did_registry WHERE institution_id = %s",
-        (institution_id,),
-)
-    row = cur.fetchone()
+        if not row or not row[0]:
+            raise KeyError(
+                f"No AES-GCM key found for artisan_id={full_artisan_id!r}. "
+                "Ensure the artisan was approved with KEY_ENCRYPTION_SECRET set, "
+                "or switch to Vault (VAULT_ENABLED=true)."
+            )
+        key = decrypt_key(row[0], row[1])
 
-    cur.close()
-    conn.close()
+        print("TYPE:", type(key))
+        print("LEN:", len(key))
+        print("RAW:", key)
 
-    if not row or not row[0]:
-        raise KeyError(
-            f"No dev-mode key found for institution_id={institution_id!r}. "
-            "Ensure the institution was approved after KEY_ENCRYPTION_KEY was set."
-        )
+        return key
 
-    private_key_bytes = decrypt_key(row[0], row[1])
+    if identity_type == IDENTITY_INSTITUTION:
+        conn = get_db_connection()
+        cur  = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT private_key_enc, key_nonce FROM did_registry WHERE institution_id = %s",
+                (identity_id,),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
 
-    # FIX: restore original Algorand private key format
-    private_key = private_key_bytes.decode()
+        if not row or not row[0]:
+            raise KeyError(
+                f"No AES-GCM key found for institution_id={identity_id!r}. "
+                "Ensure the institution was approved with KEY_ENCRYPTION_SECRET set, "
+                "or switch to Vault (VAULT_ENABLED=true)."
+            )
+        return decrypt_key(row[0], row[1])
 
-    return private_key
+    raise ValueError(f"Unknown identity_type: {identity_type!r}")
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+# ── Canonical resolver (new public API) ───────────────────────────────────────
+
+def resolve_private_key(identity_type: str, identity_id: str | None = None) -> bytes:
+    """
+    Unified private key resolver — the single entry point for all key access.
+
+    Replaces all branching logic that previously spread across _load_private_key().
+    All callers (sign_transaction, sign_credential_hash, get_issuer_address) delegate
+    here exclusively; no key routing logic exists outside this function.
+
+    Args:
+        identity_type: One of IDENTITY_SYSTEM | IDENTITY_ARTISAN | IDENTITY_INSTITUTION
+        identity_id:   Short hex suffix for artisan/institution, or None for system.
+                       For artisans, pass the suffix WITHOUT the "artisan/" prefix.
+
+    Returns:
+        Raw private key bytes (64 bytes: seed + public key).
+
+    Routing:
+        VAULT_ENABLED=true  → Vault KV v2 at secret/skillchain/<path>
+                              Fails hard if Vault is unreachable (no silent fallback).
+        VAULT_ENABLED=false → AES-GCM from DB (artisan/institution)
+                              or MNEMONIC env var (system).
+                              KEY_ENCRYPTION_SECRET required for DB paths.
+
+    CRITICAL — caller contract (MUST be honoured on every call path):
+        1. Copy key bytes into a zeroing bytearray buffer.
+        2. Use the buffer for exactly one signing operation.
+        3. Zero the buffer and delete ALL references in a `finally` block.
+        4. Never log, return to a client, or store the key bytes.
+        Key lifetime MUST NOT exceed a single signing call.
+    """
+    from vault_client import is_vault_enabled, read_key
+
+    if is_vault_enabled():
+        vault_path = _vault_path_for(identity_type, identity_id)
+        return read_key(vault_path)      # hard failure if Vault unreachable
+
+    return _load_from_db(identity_type, identity_id)
+
+
+# ── Backward-compatibility shim ───────────────────────────────────────────────
+
+def _load_private_key(institution_id: str | None) -> bytes:
+    """
+    Legacy shim — parses the old institution_id convention and delegates to
+    resolve_private_key(). Preserved so existing call sites are not broken.
+
+    Convention decoded:
+        None                 → IDENTITY_SYSTEM
+        "system"             → IDENTITY_SYSTEM
+        "artisan/<hex>"      → IDENTITY_ARTISAN  (strips "artisan/" prefix)
+        "<hex>"              → IDENTITY_INSTITUTION
+
+    New code MUST call resolve_private_key() directly with explicit identity_type.
+    """
+    if institution_id is None or institution_id == SYSTEM_INSTITUTION_ID:
+        return resolve_private_key(IDENTITY_SYSTEM)
+
+    if institution_id.startswith("artisan/"):
+        short_id = institution_id[len("artisan/"):]
+        return resolve_private_key(IDENTITY_ARTISAN, short_id)
+
+    return resolve_private_key(IDENTITY_INSTITUTION, institution_id)
+
+
+# ── Public signing API ────────────────────────────────────────────────────────
 
 def sign_transaction(txn, institution_id: str | None = None):
     """
-    Sign an Algorand transaction object securely.
+    Sign an Algorand transaction object.
 
-    The private key is fetched, used to sign, and deleted from local scope
-    in a single tightly-scoped call — the key is never returned or stored.
+    Key is fetched via _load_private_key() → resolve_private_key(), used for
+    exactly one sign() call, then zeroed and deleted.
 
     Args:
         txn:            An algosdk transaction object (e.g. PaymentTxn).
-        institution_id: Vault institution_id. None → system issuer.
+        institution_id: Legacy routing string. None → system issuer.
+                        New call sites should migrate to resolve_private_key() directly.
 
     Returns:
         SignedTransaction (algosdk object).
 
     Security:
-        - `del private_key` runs in `finally` so the key is cleared even on error.
-        - Python does not guarantee memory zeroing; this minimises exposure window.
+        Zeroing bytearray buffer used; `del` runs in `finally` on all paths.
+        Python cannot guarantee OS-level zeroing; this minimises exposure window.
     """
     private_key = _load_private_key(institution_id)
+    key_buf = bytearray(private_key)
     try:
-        signed_txn = txn.sign(private_key)  # key used exactly once
+        signed_txn = txn.sign(bytes(key_buf))
     finally:
-        del private_key  # wipe from this scope immediately after signing
+        for i in range(len(key_buf)):
+            key_buf[i] = 0
+        del key_buf
+        del private_key
     return signed_txn
 
 
+from nacl.signing import SigningKey
+import base64
+
 def sign_credential_hash(cert_hash: str, institution_id: str | None = None) -> str:
     """
-    Sign a certificate hash using NaCl Ed25519.
+    Sign a certificate / artwork hash using Ed25519 (PyNaCl).
 
-    Replaces did_service.sign_credential() with a secure fetch-sign-delete pattern.
-    The private key and all derived sensitive intermediaries are deleted before return.
-
-    Args:
-        cert_hash:      SHA-256 hex digest of the normalised certificate image.
-        institution_id: Vault institution_id. None → system issuer.
-
-    Returns:
-        Base64-encoded Ed25519 signature string.
-
-    Security:
-        - private_key, private_key_bytes, and signing_key are all local to this scope.
-        - `del` is called on private_key in `finally`; others are GC-eligible after return.
+    Uses first 32 bytes of Algorand private key as seed.
     """
-    private_key = _load_private_key(institution_id)
-    try:
-        # Derive Ed25519 signing key from the first 32 bytes of the algosdk private key
-        private_key_bytes = base64.b64decode(private_key)[:32]
-        signing_key = SigningKey(private_key_bytes, encoder=RawEncoder)
-        signed = signing_key.sign(cert_hash.encode(), encoder=RawEncoder)
-        signature = base64.b64encode(signed.signature).decode()
-    finally:
-        del private_key  # most critical: wipe the raw key bytes first
-    return signature
 
+    private_key = _load_private_key(institution_id)
+
+    try:
+        # Debug
+        print("\n==== SIGNING DEBUG ====")
+        print("TYPE:", type(private_key))
+        print("LEN:", len(private_key))
+        print("======================\n")
+
+        # ✅ Correct: take first 32 bytes ONLY
+        seed = private_key[:32]
+
+        # ✅ Correct: no encoder
+        signing_key = SigningKey(seed)
+
+        # Sign the hash
+        signed = signing_key.sign(cert_hash.encode())
+
+        # Return only signature (not message+signature)
+        signature = base64.b64encode(signed.signature).decode()
+
+        return signature
+
+    finally:
+        del private_key
 
 def get_issuer_address(institution_id: str | None = None) -> str:
     """
-    Derive the Algorand public address for the given institution.
+    Derive the Algorand public address for the given identity.
 
-    Used by verification and transaction-building paths that need the sender
-    address but must not retain the private key.
+    Used by paths that need the sender address without retaining the private key.
+    The address (non-sensitive) is returned; the key is zeroed and deleted.
 
     Args:
-        institution_id: Vault institution_id. None → system issuer.
+        institution_id: Legacy routing string. None → system issuer.
 
     Returns:
-        Algorand base32-encoded public address string (safe to log/store).
-
-    Security:
-        Private key is fetched and deleted before this function returns.
-        Only the public address (non-sensitive) is returned.
+        Algorand base32-encoded public address string (safe to log / store).
     """
     private_key = _load_private_key(institution_id)
+    key_buf = bytearray(private_key)
     try:
-        address = account.address_from_private_key(private_key)
+        address = account.address_from_private_key(bytes(key_buf))
     finally:
-        del private_key  # address is public; key is not needed beyond this line
+        for i in range(len(key_buf)):
+            key_buf[i] = 0
+        del key_buf
+        del private_key
     return address

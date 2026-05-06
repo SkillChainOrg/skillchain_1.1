@@ -44,7 +44,10 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from PIL import Image
 
-from algorand_service import init_db, anchor_hash, verify_hash
+from algorand_service import init_db, anchor_hash, verify_hash, get_algod_client, generate_hmac, save_to_db
+from signing_service import sign_credential_hash, sign_transaction
+from algosdk import transaction as algo_txn_mod
+from algosdk.transaction import wait_for_confirmation
 from did_service import (
     init_did_db,
     validate_api_key,
@@ -54,7 +57,7 @@ from did_service import (
     verify_email_token,
     get_pending_registrations,
     approve_registration,
-    get_algod_client,
+    get_algod_client as get_did_algod_client,  # aliased — avoid collision with algorand_service
 )
 from digilocker_service import (
     create_digilocker_request,
@@ -63,6 +66,7 @@ from digilocker_service import (
 )
 from identity_service import bind_identity, lookup_identity
 from queue_service import queue_batch, get_batch_status
+from ipfs_service import pin_with_retry
 import db_migrations
 from db import get_db_connection, dict_cursor
 
@@ -536,8 +540,8 @@ def issue():
             "tx_id":          result["tx_id"],
             "ipfs_cid":       result.get("ipfs_cid"),
             "wallet_version": result.get("wallet_version", 1),
-            "issued_by":      institution["institution"],
-            "did":            institution.get("did", ""),
+            "artisan":        institution["institution"],
+            "artisan_did":    institution.get("did", ""),
             "explorer_url":   f"https://testnet.explorer.perawallet.app/tx/{result['tx_id']}",
         })
 
@@ -685,6 +689,499 @@ def admin_revoke_issuer(institution_id):
     except Exception as exc:
         log.error("admin_revoke_issuer error: %s", exc)
         return jsonify({"error": "Revocation failed", "detail": str(exc)}), 500
+
+
+# ── Artisan-first routes ────────────────────────────────────────────────
+
+def _derive_artisan_id(name: str) -> str:
+    """
+    Derive a stable, URL-safe artisan_id from the artisan's name.
+    Format: 'artisan/<16-char-hex>'
+    The 'artisan/' prefix is used throughout the signing and Vault routing
+    layers to distinguish artisan keys from institution keys.
+    Vault path: secret/skillchain/artisan/<16-char-hex>
+    """
+    import hashlib
+    suffix = hashlib.sha256(name.strip().lower().encode()).hexdigest()[:16]
+    return f"artisan/{suffix}"
+
+
+@app.route("/register-artisan", methods=["POST"])
+@limiter.limit("20 per minute")
+def register_artisan():
+    """
+    Stage 1 of artisan onboarding: store a pending artisan record.
+    No DID, keys, or wallet are generated at this stage.
+    The artisan must be approved by an admin before identity is created.
+    """
+    try:
+        data = request.get_json() or {}
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "name is required"}), 400
+
+        craft_type = (data.get("craft_type") or "").strip()
+        cluster    = (data.get("cluster")    or "").strip()
+        location   = (data.get("location")   or "").strip()
+
+        artisan_id = _derive_artisan_id(name)
+        created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        conn = get_db_connection()
+        cur  = conn.cursor()
+        try:
+            cur.execute(
+                """
+                INSERT INTO artisans
+                    (artisan_id, name, craft_type, cluster, location, status, created_at)
+                VALUES (%s, %s, %s, %s, %s, 'pending', %s)
+                ON CONFLICT (artisan_id) DO NOTHING
+                """,
+                (artisan_id, name, craft_type, cluster, location, created_at),
+            )
+            conn.commit()
+            inserted = cur.rowcount
+        finally:
+            cur.close()
+            conn.close()
+
+        if inserted == 0:
+            return jsonify({"error": "An artisan with this name already exists"}), 409
+
+        # Fetch the assigned DB id
+        conn2 = get_db_connection()
+        cur2  = dict_cursor(conn2)
+        try:
+            cur2.execute(
+                "SELECT id FROM artisans WHERE artisan_id = %s",
+                (artisan_id,),
+            )
+            row = cur2.fetchone()
+        finally:
+            cur2.close()
+            conn2.close()
+
+        return jsonify({
+            "success":    True,
+            "id":         row["id"] if row else None,
+            "artisan_id": artisan_id,
+            "name":       name,
+            "status":     "pending",
+            "created_at": created_at,
+            "message":    "Artisan registered. Awaiting admin approval before identity is created.",
+        }), 201
+
+    except Exception as exc:
+        log.error("register_artisan error: %s", exc)
+        return jsonify({"error": "Artisan registration failed", "detail": str(exc)}), 500
+
+
+@app.route("/admin/artisans/pending", methods=["GET"])
+def admin_artisans_pending():
+    """List all artisans with status = pending. Requires X-Admin-Key."""
+    try:
+        if request.headers.get("X-Admin-Key") != ADMIN_KEY:
+            return jsonify({"error": "Unauthorized"}), 403
+
+        conn = get_db_connection()
+        cur  = dict_cursor(conn)
+        try:
+            cur.execute(
+                """
+                SELECT id, artisan_id, name, craft_type, cluster, location, created_at
+                FROM artisans WHERE status = 'pending'
+                ORDER BY created_at DESC
+                """
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+        finally:
+            cur.close()
+            conn.close()
+
+        return jsonify(rows)
+
+    except Exception as exc:
+        log.error("admin_artisans_pending error: %s", exc)
+        return jsonify({"error": "Could not fetch pending artisans"}), 500
+
+
+@app.route("/admin/approve-artisan/<int:artisan_db_id>", methods=["POST"])
+def admin_approve_artisan(artisan_db_id: int):
+    """
+    Stage 2 of artisan onboarding: generate identity & approve.
+
+    This is the ONLY place where:
+      - Ed25519 keypair is generated
+      - Algorand wallet address is derived
+      - DID is created
+      - Private key is written to Vault (or AES-GCM in dev mode)
+
+    Vault path: secret/skillchain/artisan/<artisan_id_suffix>
+    Private key is also stored temporarily in artisans.enc_private_key
+    (AES-GCM, same format as did_registry) as deprecated fallback.
+    """
+    try:
+        if request.headers.get("X-Admin-Key") != ADMIN_KEY:
+            return jsonify({"error": "Unauthorized"}), 403
+
+        # Fetch pending artisan
+        conn = get_db_connection()
+        cur  = dict_cursor(conn)
+        try:
+            cur.execute(
+                "SELECT * FROM artisans WHERE id = %s AND status = 'pending'",
+                (artisan_db_id,),
+            )
+            artisan = cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
+
+        if not artisan:
+            return jsonify({"error": "Artisan not found or already processed"}), 404
+
+        artisan      = dict(artisan)
+        artisan_id   = artisan["artisan_id"]   # e.g. 'artisan/8f3a1c9d24b07e5f'
+        artisan_name = artisan["name"]
+
+        # ── Generate Ed25519 keypair + Algorand address ───────────────────
+        from nacl.signing import SigningKey as _NaClSK
+        from nacl.encoding import RawEncoder as _Raw
+        from algosdk import encoding as _ae
+        import base64 as _b64
+
+        signing_key      = _NaClSK.generate()
+        seed_bytes       = signing_key.encode(encoder=_Raw)              # 32 bytes
+        pub_bytes        = signing_key.verify_key.encode(encoder=_Raw)   # 32 bytes
+        private_key_bytes = seed_bytes + pub_bytes                        # 64 bytes
+        algorand_wallet  = _ae.encode_address(pub_bytes)
+        ed25519_pubkey   = _b64.b64encode(pub_bytes).decode()
+
+        # DID follows same pattern as institutions: did:algo:testnet:<address>:<suffix>
+        id_suffix = artisan_id.split("/", 1)[1]  # strip 'artisan/' prefix
+        artisan_did = f"did:algo:testnet:{algorand_wallet}:{id_suffix}"
+
+        # ── Store key (Vault primary, AES-GCM fallback) ─────────────────
+        enc_private_key: str | None = None
+        key_nonce:       str | None = None
+
+        try:
+            from vault_client import is_vault_enabled
+            if is_vault_enabled():
+                from vault_client import write_key
+                write_key(artisan_id, private_key_bytes)
+                log.info("Vault write confirmed for artisan_id=%s", artisan_id)
+            else:
+                from key_vault import encrypt_key
+                enc_private_key, key_nonce = encrypt_key(private_key_bytes)
+        finally:
+            # Best-effort memory minimisation
+            del private_key_bytes
+            del seed_bytes
+            del pub_bytes
+            del signing_key
+
+        approved_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        approved_by = request.headers.get("X-Approved-By", "admin")
+
+        # ── Persist approved artisan ───────────────────────────
+        conn = get_db_connection()
+        cur  = conn.cursor()
+        try:
+            cur.execute(
+                """
+                UPDATE artisans
+                SET did             = %s,
+                    algorand_wallet = %s,
+                    ed25519_pubkey  = %s,
+                    enc_private_key = %s,
+                    key_nonce       = %s,
+                    status          = 'approved',
+                    approved_by     = %s,
+                    approved_at     = %s
+                WHERE id = %s
+                """,
+                (
+                    artisan_did, algorand_wallet, ed25519_pubkey,
+                    enc_private_key, key_nonce,
+                    approved_by, approved_at, artisan_db_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+        log.info(
+            "Artisan approved: id=%s artisan_id=%s did=%s wallet=%s",
+            artisan_db_id, artisan_id, artisan_did, algorand_wallet,
+        )
+        return jsonify({
+            "success":        True,
+            "id":             artisan_db_id,
+            "artisan_id":     artisan_id,
+            "did":            artisan_did,
+            "algorand_wallet": algorand_wallet,
+            "ed25519_pubkey": ed25519_pubkey,
+            "status":         "approved",
+            "approved_by":    approved_by,
+            "approved_at":    approved_at,
+            "vault_path":     f"secret/skillchain/{artisan_id}",
+            "message":        "Artisan identity created. Keys stored in Vault (or AES-GCM fallback).",
+        })
+
+    except Exception as exc:
+        log.error("admin_approve_artisan error for id=%s: %s", artisan_db_id, exc)
+        return jsonify({"error": "Artisan approval failed", "detail": str(exc)}), 500
+
+
+@app.route("/admin/reject-artisan/<int:artisan_db_id>", methods=["POST"])
+def admin_reject_artisan(artisan_db_id: int):
+    """Reject a pending artisan application. Requires X-Admin-Key."""
+    try:
+        if request.headers.get("X-Admin-Key") != ADMIN_KEY:
+            return jsonify({"error": "Unauthorized"}), 403
+
+        data   = request.get_json(silent=True) or {}
+        reason = data.get("reason", "")
+
+        conn = get_db_connection()
+        cur  = conn.cursor()
+        try:
+            cur.execute(
+                """
+                UPDATE artisans
+                SET status      = 'rejected',
+                    approved_by = %s,
+                    approved_at = %s
+                WHERE id = %s AND status = 'pending'
+                """,
+                (request.headers.get("X-Approved-By", "admin"),
+                 time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                 artisan_db_id),
+            )
+            conn.commit()
+            rows = cur.rowcount
+        finally:
+            cur.close()
+            conn.close()
+
+        if rows == 0:
+            return jsonify({"error": "Artisan not found or not in pending state"}), 404
+
+        return jsonify({
+            "success":  True,
+            "id":       artisan_db_id,
+            "status":   "rejected",
+            "reason":   reason,
+        })
+
+    except Exception as exc:
+        log.error("admin_reject_artisan error: %s", exc)
+        return jsonify({"error": "Rejection failed", "detail": str(exc)}), 500
+
+
+@app.route("/add-artwork", methods=["POST"])
+@limiter.limit("10 per minute")
+def add_artwork():
+    """
+    Register an artwork for an approved artisan.
+
+    Multipart form fields:
+      - artwork      : image file (multipart)
+      - artisan_did  : the artisan's DID string
+      - title        : artwork title
+      - description  : optional description
+      - materials    : comma-separated materials list
+
+    Flow:
+      1. Validate artisan is approved
+      2. Normalize image + compute SHA-256 hash
+      3. Sign hash with artisan's Ed25519 key
+      4. Pin artisan-format metadata to IPFS
+      5. Anchor on Algorand using artisan's wallet
+      6. Write artwork record to DB
+    """
+    try:
+        artisan_did = (request.form.get("artisan_did") or "").strip()
+        if not artisan_did:
+            return jsonify({"error": "artisan_did is required"}), 400
+
+        if "artwork" not in request.files:
+            return jsonify({"error": "No artwork file uploaded (field: 'artwork')"}), 400
+
+        file = request.files["artwork"]
+        if not file.filename:
+            return jsonify({"error": "Empty filename"}), 400
+
+        # ── Look up artisan ───────────────────────────────────
+        conn = get_db_connection()
+        cur  = dict_cursor(conn)
+        try:
+            cur.execute(
+                """
+                SELECT id, artisan_id, name, algorand_wallet, status
+                FROM artisans WHERE did = %s
+                """,
+                (artisan_did,),
+            )
+            artisan = cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
+
+        if not artisan:
+            return jsonify({"error": "Artisan not found for the given DID"}), 404
+        artisan = dict(artisan)
+
+        if artisan["status"] != "approved":
+            return jsonify({
+                "error":  "Artisan is not approved",
+                "status": artisan["status"],
+            }), 403
+
+        artisan_id_key  = artisan["artisan_id"]    # e.g. 'artisan/8f3a1c9d24b07e5f'
+        artisan_wallet  = artisan["algorand_wallet"]
+        artisan_name    = artisan["name"]
+
+        title       = (request.form.get("title")       or "").strip()
+        description = (request.form.get("description") or "").strip()
+        materials   = (request.form.get("materials")   or "").strip()
+
+        # ── Hash the artwork image ────────────────────────────
+        file_bytes = file.read()
+        cert_hash  = normalize_and_hash(file_bytes)
+        del file_bytes
+
+        # ── Sign with artisan's key ─────────────────────────
+        signature  = sign_credential_hash(cert_hash, institution_id=artisan_id_key)
+
+        # ── Build artisan-format IPFS metadata ───────────────
+        issued_at  = time.strftime("%Y-%m-%d")
+        hmac_val   = generate_hmac(cert_hash)
+        metadata   = {
+            "version":     "2.0",
+            "cert_hash":   cert_hash,
+            "artisan_did": artisan_did,
+            "artisan":     artisan_name,
+            "title":       title,
+            "materials":   materials,
+            "doc_type":    "artwork",
+            "issued_at":   issued_at,
+            "signature":   signature,
+            "hmac_value":  hmac_val,
+        }
+
+        # ── Pin to IPFS ──────────────────────────────────
+        ipfs_cid = pin_with_retry(metadata)
+
+        # ── Anchor on Algorand (artisan's own wallet as sender) ───
+        import json as _j
+        client     = get_algod_client()
+        note_data  = {"sc": "1", "cid": ipfs_cid, "wv": 2}
+        note_bytes = _j.dumps(note_data).encode()
+        assert len(note_bytes) < 150, f"Note too large: {len(note_bytes)}"
+
+        params     = client.suggested_params()
+        txn        = algo_txn_mod.PaymentTxn(
+            sender=artisan_wallet,
+            sp=params,
+            receiver=artisan_wallet,
+            amt=0,
+            note=note_bytes,
+        )
+        signed_txn = sign_transaction(txn, artisan_id_key)
+        tx_id      = client.send_transaction(signed_txn)
+        wait_for_confirmation(client, tx_id, 4)
+
+        # ── Persist to artworks table ───────────────────────
+        conn = get_db_connection()
+        cur  = conn.cursor()
+        try:
+            cur.execute(
+                """
+                INSERT INTO artworks
+                    (artisan_did, title, description, materials,
+                     cert_hash, signature, ipfs_cid, tx_id, status, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'anchored', %s)
+                ON CONFLICT (cert_hash) DO NOTHING
+                """,
+                (artisan_did, title, description, materials,
+                 cert_hash, signature, ipfs_cid, tx_id, issued_at),
+            )
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+        # Also write to certificates table so verify_hash() finds it immediately
+        save_to_db(cert_hash, tx_id, "artwork", issued_at, ipfs_cid)
+
+        return jsonify({
+            "success":      True,
+            "cert_hash":    cert_hash,
+            "tx_id":        tx_id,
+            "ipfs_cid":     ipfs_cid,
+            "artisan_did":  artisan_did,
+            "artisan":      artisan_name,
+            "title":        title,
+            "explorer_url": f"https://testnet.explorer.perawallet.app/tx/{tx_id}",
+        })
+
+    except Exception as exc:
+        log.error("add_artwork error: %s", exc)
+        return jsonify({"error": "Artwork registration failed", "detail": str(exc)}), 500
+
+
+@app.route("/artisan/<path:did>", methods=["GET"])
+def resolve_artisan(did: str):
+    """
+    Resolve an artisan DID to a lightweight public profile.
+    Returns approved artisan info; never exposes keys.
+    """
+    try:
+        if not re.match(r"^did:[a-z]+:[a-zA-Z0-9._\-:]+$", did):
+            return jsonify({"error": "Invalid DID format"}), 400
+
+        conn = get_db_connection()
+        cur  = dict_cursor(conn)
+        try:
+            cur.execute(
+                """
+                SELECT id, artisan_id, name, craft_type, cluster, location,
+                       algorand_wallet, ed25519_pubkey, status, approved_at, created_at
+                FROM artisans WHERE did = %s
+                """,
+                (did,),
+            )
+            artisan = cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
+
+        if not artisan:
+            return jsonify({"error": "Artisan not found"}), 404
+
+        artisan = dict(artisan)
+        if artisan["status"] != "approved":
+            return jsonify({"error": "Artisan not yet approved", "status": artisan["status"]}), 403
+
+        return jsonify({
+            "did":             did,
+            "name":            artisan["name"],
+            "craft_type":      artisan["craft_type"],
+            "cluster":         artisan["cluster"],
+            "location":        artisan["location"],
+            "algorand_wallet": artisan["algorand_wallet"],
+            "ed25519_pubkey":  artisan["ed25519_pubkey"],
+            "status":          artisan["status"],
+            "approved_at":     artisan["approved_at"],
+            "created_at":      artisan["created_at"],
+        })
+
+    except Exception as exc:
+        log.error("resolve_artisan error: %s", exc)
+        return jsonify({"error": "Artisan resolution failed"}), 500
 
 
 # ── DID resolution endpoints ──────────────────────────────────────────────────
@@ -902,22 +1399,74 @@ td{padding:10px 12px;border-bottom:1px solid #f0f0f0;color:#888;font-style:itali
 
 @app.route("/health", methods=["GET"])
 def health():
-    try:
-        vault_status = "disabled"
-        try:
-            from vault_client import is_vault_enabled, _get_client
-            if is_vault_enabled():
-                client       = _get_client()
-                vault_status = "connected" if client.is_authenticated() else "sealed"
-        except Exception as exc:
-            vault_status = "sealed"
-            log.warning("Health check: Vault unreachable — %s", exc)
+    """
+    Structured health check.
 
-        overall = "ok" if vault_status in ("connected", "disabled") else "degraded"
-        return jsonify({"status": overall, "vault": vault_status})
+    Returns::
+
+        {
+          "status": "ok" | "degraded",
+          "vault": {
+            "enabled":   true | false,
+            "reachable": true | false | null,
+            "mode":      "vault" | "aes_gcm"
+          },
+          "database": "ok" | "error",
+          "timestamp": "<iso8601>"
+        }
+
+    Never raises — all exceptions are caught and reflected in the response.
+    """
+    import datetime
+
+    # ── Vault status ─────────────────────────────────────────────────────────
+    vault_enabled  = False
+    vault_reachable: bool | None = None
+    vault_mode     = "aes_gcm"
+
+    try:
+        from vault_client import is_vault_enabled, health_check as vault_health_check
+        vault_enabled = is_vault_enabled()
+        if vault_enabled:
+            vault_reachable = vault_health_check()   # True / False, never raises
+            vault_mode      = "vault"
+        # else: vault_reachable stays None, mode stays "aes_gcm"
     except Exception as exc:
-        log.error("health error: %s", exc)
-        return jsonify({"status": "error", "detail": str(exc)}), 500
+        log.warning("Health: vault_client import/check failed — %s", exc)
+        # vault_enabled / vault_reachable / vault_mode retain their defaults
+
+    # ── Database status ───────────────────────────────────────────────────────
+    db_status = "ok"
+    try:
+        conn = get_db_connection()
+        cur  = conn.cursor()
+        try:
+            cur.execute("SELECT 1")
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as exc:
+        log.warning("Health: database check failed — %s", exc)
+        db_status = "error"
+
+    # ── Overall status ────────────────────────────────────────────────────────
+    # Degraded if DB is down, or if Vault is enabled but unreachable.
+    degraded = (
+        db_status == "error"
+        or (vault_enabled and vault_reachable is False)
+    )
+    overall = "degraded" if degraded else "ok"
+
+    return jsonify({
+        "status": overall,
+        "vault": {
+            "enabled":   vault_enabled,
+            "reachable": vault_reachable,
+            "mode":      vault_mode,
+        },
+        "database":  db_status,
+        "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    })
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────

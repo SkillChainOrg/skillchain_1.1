@@ -425,25 +425,46 @@ def approve_registration(registration_id: str) -> dict:
     # ── Step 3: derive institution_id ────────────────────────────────────────
     institution_id = derive_institution_id(institution_name)
 
-    # ── Step 4: generate Algorand keypair ────────────────────────────────────
-    from algosdk import account as algo_account
-    private_key, institution_address = algo_account.generate_account()
+    # ── Step 4: generate Ed25519 keypair + Algorand address ──────────────────
+    # Private key bytes must never touch PostgreSQL when Vault is enabled.
+    from nacl.signing import SigningKey as _NaClSigningKey
+    from algosdk import encoding as _algo_encoding
 
-    private_key_enc = None
-    key_nonce       = None
+    signing_key = _NaClSigningKey.generate()
+    seed_bytes = signing_key.encode(encoder=RawEncoder)  # 32 bytes seed
+    public_key_bytes = signing_key.verify_key.encode(encoder=RawEncoder)  # 32 bytes
+
+    # Algorand SDK expects a 64-byte secret key (seed + public key)
+    private_key_bytes = seed_bytes + public_key_bytes
+    institution_address = _algo_encoding.encode_address(public_key_bytes)
+
+    private_key_enc: str | None = None
+    key_nonce: str | None = None
+    vault_key_id: str | None = None
 
     try:
         from vault_client import is_vault_enabled
         if is_vault_enabled():
-            from vault_client import store_key
-            store_key(institution_id, private_key)
+            from vault_client import write_key
+            # Write private key bytes to Vault. If this fails, do not proceed to DB insert.
+            write_key(institution_id, private_key_bytes)
+            log.info(
+                "Vault key write confirmed for institution_id=%s — DB will store vault_key_id only.",
+                institution_id,
+            )
+            private_key_enc = None
+            key_nonce = None
+            vault_key_id = institution_id  # deterministic retrieval path
         else:
             from key_vault import encrypt_key
-            private_key_bytes = private_key.encode()
             private_key_enc, key_nonce = encrypt_key(private_key_bytes)
-            del private_key_bytes
+            vault_key_id = None
     finally:
-        del private_key
+        # best-effort memory minimisation (Python cannot guarantee zeroisation)
+        del private_key_bytes
+        del seed_bytes
+        del public_key_bytes
+        del signing_key
 
     # ── Step 5: fund wallet (Fix 8 balance check inside _fund_institution_address) ──
     funding_tx_id  = None
@@ -467,6 +488,7 @@ def approve_registration(registration_id: str) -> dict:
         institution_id=institution_id,
         private_key_enc=private_key_enc,
         key_nonce=key_nonce,
+        vault_key_id=vault_key_id,
     )
 
     # ── Step 7: mark approved ────────────────────────────────────────────────
@@ -502,6 +524,7 @@ def register_did(
     institution_id: str | None = None,
     private_key_enc: str | None = None,
     key_nonce: str | None = None,
+    vault_key_id: str | None = None,
 ) -> dict:
     """
     Write a DID record for an institution into did_registry.
@@ -546,8 +569,8 @@ def register_did(
             INSERT INTO did_registry
                 (address, did, institution, public_key, tx_id, api_key, domain,
                  registered_at, institution_id, institution_address, wallet_version,
-                 private_key_enc, key_nonce)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 private_key_enc, key_nonce, vault_key_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (address) DO UPDATE SET
                 did                 = EXCLUDED.did,
                 institution         = EXCLUDED.institution,
@@ -560,13 +583,14 @@ def register_did(
                 institution_address = EXCLUDED.institution_address,
                 wallet_version      = EXCLUDED.wallet_version,
                 private_key_enc     = EXCLUDED.private_key_enc,
-                key_nonce           = EXCLUDED.key_nonce
+                key_nonce           = EXCLUDED.key_nonce,
+                vault_key_id        = EXCLUDED.vault_key_id
             """,
             (
                 institution_address, did, institution_name, public_key_b64,
                 "pending", api_key_hash, domain, time.strftime("%Y-%m-%d"),
                 institution_id, institution_address, wallet_version,
-                private_key_enc, key_nonce,
+                private_key_enc, key_nonce, vault_key_id,
             ),
         )
         conn.commit()
@@ -683,13 +707,58 @@ def get_did_for_address(address: str) -> dict | None:
         conn.close()
 
 
+def get_did_for_artisan_address(address: str) -> dict | None:
+    """
+    Lookup an artisan record by their Algorand wallet address.
+    Returns name and DID so verify_provenance can validate artisan artworks.
+    Only approved artisans are returned (status = 'approved').
+    """
+    conn = get_db_connection()
+    cur  = dict_cursor(conn)
+    try:
+        cur.execute(
+            """
+            SELECT did, name, ed25519_pubkey
+            FROM artisans
+            WHERE algorand_wallet = %s AND status = 'approved'
+            """,
+            (address,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        cur.close()
+        conn.close()
+
+
 # ── Provenance verification ───────────────────────────────────────────────────
 
 def verify_provenance(address: str, cert_hash: str, signature: str) -> dict:
-    did_info = get_did_for_address(address)
+    """
+    Verify a credential signature against the address owner's Ed25519 public key.
+
+    Lookup order:
+      1. did_registry (institution / legacy path)
+      2. artisans table (artisan-first path)
+    The cryptographic verification is identical in both cases — the Algorand
+    address encodes the Ed25519 public key, so no separate key fetch is needed.
+    """
+    did_info   = get_did_for_address(address)
+    is_artisan = False
 
     if not did_info:
-        return {"verified": False, "reason": "Issuer address not in DID registry"}
+        artisan_info = get_did_for_artisan_address(address)
+        if artisan_info:
+            did_info   = {
+                "institution": artisan_info["name"],
+                "did":         artisan_info["did"],
+            }
+            is_artisan = True
+        else:
+            return {
+                "verified": False,
+                "reason":   "Address not found in DID registry or artisans",
+            }
 
     try:
         public_key_bytes = encoding.decode_address(address)
@@ -697,11 +766,14 @@ def verify_provenance(address: str, cert_hash: str, signature: str) -> dict:
         sig_bytes   = base64.b64decode(signature)
         verify_key.verify(cert_hash.encode(), sig_bytes, encoder=RawEncoder)
 
-        return {
+        result = {
             "verified":    True,
             "institution": did_info["institution"],
             "did":         did_info["did"],
         }
+        if is_artisan:
+            result["artisan_did"] = did_info["did"]
+        return result
     except Exception:
         return {"verified": False, "reason": "Signature verification failed"}
 

@@ -74,6 +74,7 @@ def run_migrations() -> None:
             ("registered_at",       "TEXT"),
             ("private_key_enc",     "TEXT"),
             ("key_nonce",           "TEXT"),
+            ("vault_key_id",        "TEXT"),   # Vault path segment; NULL when AES-GCM mode
             ("wallet_version",      "INTEGER DEFAULT 1"),
             ("revoked",             "INTEGER DEFAULT 0"),
             ("revoked_at",          "TEXT"),
@@ -172,6 +173,92 @@ def run_migrations() -> None:
         cur.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS uidx_did_reg_domain
             ON did_registry (LOWER(domain))
+        """)
+
+        # ── artisans ──────────────────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS artisans (
+                id                SERIAL PRIMARY KEY,
+                artisan_id        TEXT UNIQUE,
+                did               TEXT,
+                name              TEXT NOT NULL,
+                craft_type        TEXT,
+                cluster           TEXT,
+                location          TEXT,
+                algorand_wallet   TEXT,
+                ed25519_pubkey    TEXT,
+                enc_private_key   TEXT,
+                key_nonce         TEXT,
+                vault_key_version TEXT,
+                status            TEXT DEFAULT 'pending',
+                approved_by       TEXT,
+                approved_at       TEXT,
+                created_at        TEXT
+            )
+        """)
+
+        for col, col_def in [
+            ("artisan_id",        "TEXT"),
+            ("did",               "TEXT"),
+            ("craft_type",        "TEXT"),
+            ("cluster",           "TEXT"),
+            ("location",          "TEXT"),
+            ("algorand_wallet",   "TEXT"),
+            ("ed25519_pubkey",    "TEXT"),
+            ("enc_private_key",   "TEXT"),
+            ("key_nonce",         "TEXT"),
+            ("vault_key_version", "TEXT"),
+            ("status",            "TEXT DEFAULT 'pending'"),
+            ("approved_by",       "TEXT"),
+            ("approved_at",       "TEXT"),
+            ("created_at",        "TEXT"),
+        ]:
+            _add_column_if_missing(cur, "artisans", col, col_def)
+
+        # ── artworks ──────────────────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS artworks (
+                id          SERIAL PRIMARY KEY,
+                artisan_did TEXT NOT NULL,
+                title       TEXT,
+                description TEXT,
+                materials   TEXT,
+                cert_hash   TEXT UNIQUE,
+                signature   TEXT,
+                ipfs_cid    TEXT,
+                tx_id       TEXT,
+                status      TEXT DEFAULT 'pending',
+                created_at  TEXT
+            )
+        """)
+
+        for col, col_def in [
+            ("artisan_did",  "TEXT NOT NULL"),
+            ("title",        "TEXT"),
+            ("description",  "TEXT"),
+            ("materials",    "TEXT"),
+            ("cert_hash",    "TEXT"),
+            ("signature",    "TEXT"),
+            ("ipfs_cid",     "TEXT"),
+            ("tx_id",        "TEXT"),
+            ("status",       "TEXT DEFAULT 'pending'"),
+            ("created_at",   "TEXT"),
+        ]:
+            _add_column_if_missing(cur, "artworks", col, col_def)
+
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uidx_artisans_artisan_id
+            ON artisans (artisan_id)
+        """)
+
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_artworks_artisan_did
+            ON artworks (artisan_did)
+        """)
+
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uidx_artworks_cert_hash
+            ON artworks (cert_hash)
         """)
 
         conn.commit()
