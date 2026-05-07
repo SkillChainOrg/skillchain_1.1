@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   UserPlus,
@@ -84,8 +85,6 @@ export const ArtisanDashboard = () => {
   });
   const [artworkFile, setArtworkFile] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [acquiringId, setAcquiringId] = useState(null);
-  const [buyer, setBuyer] = useState({ name: "", email: "" });
   const { addToast } = useToast();
 
   const handleRegister = async (e) => {
@@ -129,78 +128,6 @@ export const ArtisanDashboard = () => {
     }
   };
 
-  const loadRazorpay = () =>
-    new Promise((resolve) => {
-      if (window.Razorpay) return resolve(true);
-      const script = document.createElement("script");
-      script.src = "https://checkout.razorpay.com/v1/checkout.js";
-      script.onload = () => resolve(true);
-      script.onerror = () => resolve(false);
-      document.body.appendChild(script);
-    });
-
-  const handleAcquireArtwork = async (art) => {
-    try {
-      if (!art?.artwork_id) {
-        addToast("This work is missing an internal artwork id", "error");
-        return;
-      }
-      if (!buyer.name.trim() || !buyer.email.trim()) {
-        addToast("Collector name and email are required to record acquisition", "error");
-        return;
-      }
-
-      setAcquiringId(art.artwork_id);
-      const ok = await loadRazorpay();
-      if (!ok) {
-        addToast("Could not initialize acquisition flow", "error");
-        return;
-      }
-
-      const { data } = await api.createPaymentOrder({
-        artwork_id: art.artwork_id,
-        buyer_name: buyer.name,
-        buyer_email: buyer.email,
-      });
-
-      if (!data?.success) {
-        addToast("Could not prepare acquisition", "error");
-        return;
-      }
-
-      const options = {
-        key: data.key_id,
-        amount: data.amount,
-        currency: data.currency,
-        name: "SkillChain",
-        description: "Acquire authenticated cultural work",
-        order_id: data.order_id,
-        method: { upi: true },
-        prefill: { name: buyer.name, email: buyer.email },
-        theme: { color: "#B56A3E" },
-        handler: async (resp) => {
-          const verify = await api.verifyPayment({
-            razorpay_order_id: resp.razorpay_order_id,
-            razorpay_payment_id: resp.razorpay_payment_id,
-            razorpay_signature: resp.razorpay_signature,
-            artwork_id: art.artwork_id,
-          });
-          if (verify?.data?.success) {
-            addToast("Acquisition Recorded • Provenance Updated", "success");
-          } else {
-            addToast("Payment received, but verification failed", "error");
-          }
-        },
-      };
-
-      const rzp = new window.Razorpay(options);
-      rzp.open();
-    } catch (err) {
-      addToast("Acquisition flow failed", "error");
-    } finally {
-      setAcquiringId(null);
-    }
-  };
 
   if (!registered) {
     return (
@@ -688,32 +615,6 @@ export const ArtisanDashboard = () => {
               </form>
             </div>
 
-            <div className="bg-[#F7F0E1]/85 border border-[#d8c6aa] shadow-[0_10px_50px_rgba(0,0,0,0.08)] p-8 md:p-10 mb-10">
-              <h3 className="text-2xl font-serif mb-5 flex items-center gap-2">
-                <Sparkles size={20} className="text-[#B56A3E]" /> Acquire (Domestic UPI)
-              </h3>
-              <p className="text-sm text-[#6D5646] mb-4">
-                This records an acquisition as a verified provenance event. Payment is confirmed on the server before any ownership metadata is updated.
-              </p>
-              <div className="grid md:grid-cols-2 gap-4">
-                <input
-                  className="w-full px-4 py-4 border border-[#cfb99d] bg-[#fffaf1] outline-none focus:border-[#B56A3E] transition"
-                  placeholder="Collector name"
-                  value={buyer.name}
-                  onChange={(e) => setBuyer((b) => ({ ...b, name: e.target.value }))}
-                />
-                <input
-                  className="w-full px-4 py-4 border border-[#cfb99d] bg-[#fffaf1] outline-none focus:border-[#B56A3E] transition"
-                  placeholder="Collector email"
-                  value={buyer.email}
-                  onChange={(e) => setBuyer((b) => ({ ...b, email: e.target.value }))}
-                />
-              </div>
-              <p className="text-xs text-[#8B694D] mt-3 uppercase tracking-[0.18em]">
-                Acquisition is archival — it is recorded, not “checked out”.
-              </p>
-            </div>
-
             <h3 className="text-2xl font-serif mb-6">Registered Works</h3>
             <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
               <AnimatePresence>
@@ -738,13 +639,18 @@ export const ArtisanDashboard = () => {
                       <h4 className="font-serif text-xl mb-1">{art.title}</h4>
                       <p className="text-sm text-[#6D5646] line-clamp-2 mb-3">{art.description}</p>
 
-                      <button
-                        onClick={() => handleAcquireArtwork(art)}
-                        disabled={acquiringId === art.artwork_id}
-                        className="w-full mb-4 bg-[#1C1A16] hover:bg-black transition duration-300 text-[#F7F0E1] py-3 px-4 tracking-wide shadow-xl disabled:opacity-50"
-                      >
-                        {acquiringId === art.artwork_id ? "Preparing acquisition..." : "Acquire Artwork"}
-                      </button>
+                      {art.artwork_id ? (
+                        <Link
+                          to={`/artworks/${art.artwork_id}`}
+                          className="block w-full text-center mb-4 bg-[#1C1A16] hover:bg-black transition duration-300 text-[#F7F0E1] py-3 px-4 tracking-wide shadow-xl"
+                        >
+                          View Provenance Object
+                        </Link>
+                      ) : (
+                        <div className="w-full mb-4 text-xs text-[#8B694D] p-3 bg-[#fffaf1] border border-[#d8c6aa]">
+                          This work is missing an internal id. Re-register to enable collector acquisition.
+                        </div>
+                      )}
 
                       <div className="space-y-2 text-xs">
                         <div className="flex items-center justify-between p-2 bg-[#fffaf1] border border-[#d8c6aa]">

@@ -270,6 +270,7 @@ def run_migrations() -> None:
                 artist_did         TEXT,
                 buyer_name         TEXT,
                 buyer_email        TEXT,
+                collector_reference_id TEXT,
                 amount             INTEGER,
                 currency           TEXT,
                 razorpay_order_id  TEXT,
@@ -286,6 +287,7 @@ def run_migrations() -> None:
             ("artist_did",          "TEXT"),
             ("buyer_name",          "TEXT"),
             ("buyer_email",         "TEXT"),
+            ("collector_reference_id", "TEXT"),
             ("amount",              "INTEGER"),
             ("currency",            "TEXT"),
             ("razorpay_order_id",   "TEXT"),
@@ -309,11 +311,17 @@ def run_migrations() -> None:
             ON acquisitions (razorpay_order_id)
         """)
 
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_acquisitions_collector_ref
+            ON acquisitions (collector_reference_id)
+        """)
+
         # ── provenance events (append-only) ──────────────────────────────────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS artwork_provenance_events (
                 id         SERIAL PRIMARY KEY,
                 artwork_id INTEGER NOT NULL,
+                provenance_event_type TEXT,
                 event_type TEXT NOT NULL,
                 event_json TEXT NOT NULL,
                 created_at TEXT
@@ -321,6 +329,7 @@ def run_migrations() -> None:
         """)
         for col, col_def in [
             ("artwork_id", "INTEGER"),
+            ("provenance_event_type", "TEXT"),
             ("event_type", "TEXT"),
             ("event_json", "TEXT"),
             ("created_at", "TEXT"),
@@ -338,6 +347,7 @@ def run_migrations() -> None:
                 acquisition_id TEXT,
                 owner_name     TEXT,
                 owner_email    TEXT,
+                collector_reference_id TEXT,
                 updated_at     TEXT
             )
         """)
@@ -345,9 +355,33 @@ def run_migrations() -> None:
             ("acquisition_id", "TEXT"),
             ("owner_name",     "TEXT"),
             ("owner_email",    "TEXT"),
+            ("collector_reference_id", "TEXT"),
             ("updated_at",     "TEXT"),
         ]:
             _add_column_if_missing(cur, "artwork_ownership", col, col_def)
+
+        # ── collectors (minimal provenance metadata; no accounts) ────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS collectors (
+                id SERIAL PRIMARY KEY,
+                collector_reference_id TEXT UNIQUE,
+                collector_name  TEXT,
+                collector_email TEXT,
+                created_at      TEXT
+            )
+        """)
+        for col, col_def in [
+            ("collector_reference_id", "TEXT"),
+            ("collector_name", "TEXT"),
+            ("collector_email", "TEXT"),
+            ("created_at", "TEXT"),
+        ]:
+            _add_column_if_missing(cur, "collectors", col, col_def)
+
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uidx_collectors_ref
+            ON collectors (collector_reference_id)
+        """)
 
         conn.commit()
         log.info("DB migrations completed successfully (PostgreSQL).")

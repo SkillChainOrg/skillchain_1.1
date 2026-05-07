@@ -94,8 +94,9 @@ def payments_create_order():
     try:
         data = request.get_json(silent=True) or {}
         artwork_id = data.get("artwork_id")
-        buyer_name = data.get("buyer_name", "")
-        buyer_email = data.get("buyer_email", "")
+        # Prefer provenance-native language. Keep legacy aliases for compatibility.
+        collector_name = data.get("collector_name", "") or data.get("buyer_name", "")
+        collector_email = data.get("collector_email", "") or data.get("buyer_email", "")
 
         if artwork_id is None:
             return jsonify({"error": "artwork_id is required"}), 400
@@ -106,8 +107,8 @@ def payments_create_order():
 
         payload = create_acquisition_order(
             artwork_id=artwork_id,
-            buyer_name=buyer_name,
-            buyer_email=buyer_email,
+            buyer_name=collector_name,
+            buyer_email=collector_email,
         )
         return jsonify({"success": True, **payload})
     except KeyError as exc:
@@ -147,7 +148,7 @@ def payments_verify_payment():
 
         return jsonify({
             "success": True,
-            "message": "Acquisition Recorded",
+            "message": "Acquisition recorded. Provenance updated.",
             "provenance_updated": True,
             **result,
         })
@@ -180,6 +181,68 @@ def normalize_and_hash(file_bytes: bytes) -> str:
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
     return hashlib.sha256(buffer.getvalue()).hexdigest()
+
+
+# ── Artwork object API (provenance-first) ─────────────────────────────────────
+
+@app.route("/api/artworks/<int:artwork_id>", methods=["GET"])
+@limiter.limit("120 per minute")
+def get_artwork_object(artwork_id: int):
+    try:
+        conn = get_db_connection()
+        cur = dict_cursor(conn)
+        try:
+            cur.execute("SELECT * FROM artworks WHERE id = %s", (artwork_id,))
+            art = cur.fetchone()
+            if not art:
+                return jsonify({"error": "Artwork not found"}), 404
+            art = dict(art)
+
+            cur.execute(
+                """
+                SELECT id, artwork_id, provenance_event_type, event_type, event_json, created_at
+                FROM artwork_provenance_events
+                WHERE artwork_id = %s
+                ORDER BY id ASC
+                """,
+                (artwork_id,),
+            )
+            events = [dict(r) for r in cur.fetchall()]
+
+            cur.execute(
+                """
+                SELECT artwork_id, acquisition_id, owner_name, owner_email, collector_reference_id, updated_at
+                FROM artwork_ownership
+                WHERE artwork_id = %s
+                """,
+                (artwork_id,),
+            )
+            own = cur.fetchone()
+            ownership = dict(own) if own else None
+        finally:
+            cur.close()
+            conn.close()
+
+        return jsonify(
+            {
+                "artwork": {
+                    "id": art.get("id"),
+                    "title": art.get("title"),
+                    "description": art.get("description"),
+                    "materials": art.get("materials"),
+                    "artisan_did": art.get("artisan_did"),
+                    "ipfs_cid": art.get("ipfs_cid"),
+                    "tx_id": art.get("tx_id"),
+                    "status": art.get("status"),
+                    "created_at": art.get("created_at"),
+                },
+                "provenance_events": events,
+                "ownership": ownership,
+            }
+        )
+    except Exception as exc:
+        log.error("get_artwork_object error: %s", exc)
+        return jsonify({"error": "Could not resolve artwork object", "detail": str(exc)}), 500
 
 
 # ── Wallet readiness check ────────────────────────────────────────────────────
