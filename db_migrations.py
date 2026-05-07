@@ -261,6 +261,94 @@ def run_migrations() -> None:
             ON artworks (cert_hash)
         """)
 
+        # ── acquisitions (commerce v1) ───────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS acquisitions (
+                id                 SERIAL PRIMARY KEY,
+                acquisition_id     TEXT UNIQUE,
+                artwork_id         INTEGER NOT NULL,
+                artist_did         TEXT,
+                buyer_name         TEXT,
+                buyer_email        TEXT,
+                amount             INTEGER,
+                currency           TEXT,
+                razorpay_order_id  TEXT,
+                razorpay_payment_id TEXT,
+                payment_status     TEXT,
+                settlement_mode    TEXT DEFAULT 'domestic_upi',
+                timestamp          TEXT
+            )
+        """)
+
+        for col, col_def in [
+            ("acquisition_id",      "TEXT"),
+            ("artwork_id",          "INTEGER"),
+            ("artist_did",          "TEXT"),
+            ("buyer_name",          "TEXT"),
+            ("buyer_email",         "TEXT"),
+            ("amount",              "INTEGER"),
+            ("currency",            "TEXT"),
+            ("razorpay_order_id",   "TEXT"),
+            ("razorpay_payment_id", "TEXT"),
+            ("payment_status",      "TEXT"),
+            ("settlement_mode",     "TEXT DEFAULT 'domestic_upi'"),
+            ("timestamp",           "TEXT"),
+        ]:
+            _add_column_if_missing(cur, "acquisitions", col, col_def)
+
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uidx_acquisitions_acquisition_id
+            ON acquisitions (acquisition_id)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_acquisitions_artwork_id
+            ON acquisitions (artwork_id)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_acquisitions_order_id
+            ON acquisitions (razorpay_order_id)
+        """)
+
+        # ── provenance events (append-only) ──────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS artwork_provenance_events (
+                id         SERIAL PRIMARY KEY,
+                artwork_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                event_json TEXT NOT NULL,
+                created_at TEXT
+            )
+        """)
+        for col, col_def in [
+            ("artwork_id", "INTEGER"),
+            ("event_type", "TEXT"),
+            ("event_json", "TEXT"),
+            ("created_at", "TEXT"),
+        ]:
+            _add_column_if_missing(cur, "artwork_provenance_events", col, col_def)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_artwork_prov_artwork_id
+            ON artwork_provenance_events (artwork_id)
+        """)
+
+        # ── ownership metadata (current owner) ───────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS artwork_ownership (
+                artwork_id     INTEGER PRIMARY KEY,
+                acquisition_id TEXT,
+                owner_name     TEXT,
+                owner_email    TEXT,
+                updated_at     TEXT
+            )
+        """)
+        for col, col_def in [
+            ("acquisition_id", "TEXT"),
+            ("owner_name",     "TEXT"),
+            ("owner_email",    "TEXT"),
+            ("updated_at",     "TEXT"),
+        ]:
+            _add_column_if_missing(cur, "artwork_ownership", col, col_def)
+
         conn.commit()
         log.info("DB migrations completed successfully (PostgreSQL).")
 

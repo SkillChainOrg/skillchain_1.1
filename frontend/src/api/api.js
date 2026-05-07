@@ -42,6 +42,18 @@ export const addArtwork = (formData) => api.post('/add-artwork', formData, {
 });
 export const getArtisan = (did) => api.get(`/artisan/${did}`);
 
+// Payments (Domestic settlement — Razorpay)
+export const createPaymentOrder = ({ artwork_id, buyer_name, buyer_email }) =>
+  api.post('/api/payments/create-order', { artwork_id, buyer_name, buyer_email });
+
+export const verifyPayment = ({ razorpay_order_id, razorpay_payment_id, razorpay_signature, artwork_id }) =>
+  api.post('/api/payments/verify-payment', {
+    razorpay_order_id,
+    razorpay_payment_id,
+    razorpay_signature,
+    artwork_id,
+  });
+
 // Admin
 export const getPendingArtisans = () => api.get('/admin/artisans/pending');
 export const approveArtisan = (id) => api.post(`/admin/approve-artisan/${id}`);

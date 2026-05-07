@@ -69,6 +69,7 @@ from queue_service import queue_batch, get_batch_status
 from ipfs_service import pin_with_retry
 import db_migrations
 from db import get_db_connection, dict_cursor
+from services.payment_service import create_acquisition_order, record_successful_acquisition
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -83,6 +84,77 @@ limiter = Limiter(
     key_func=get_remote_address,
     default_limits=["100 per day"],
 )
+
+
+# ── Commerce (Domestic Settlement v1 — Razorpay UPI) ─────────────────────────
+
+@app.route("/api/payments/create-order", methods=["POST"])
+@limiter.limit("30 per minute")
+def payments_create_order():
+    try:
+        data = request.get_json(silent=True) or {}
+        artwork_id = data.get("artwork_id")
+        buyer_name = data.get("buyer_name", "")
+        buyer_email = data.get("buyer_email", "")
+
+        if artwork_id is None:
+            return jsonify({"error": "artwork_id is required"}), 400
+        try:
+            artwork_id = int(artwork_id)
+        except Exception:
+            return jsonify({"error": "artwork_id must be an integer"}), 400
+
+        payload = create_acquisition_order(
+            artwork_id=artwork_id,
+            buyer_name=buyer_name,
+            buyer_email=buyer_email,
+        )
+        return jsonify({"success": True, **payload})
+    except KeyError as exc:
+        return jsonify({"error": "Artwork not found", "detail": str(exc)}), 404
+    except Exception as exc:
+        log.error("payments_create_order error: %s", exc)
+        return jsonify({"error": "Order creation failed", "detail": str(exc)}), 500
+
+
+@app.route("/api/payments/verify-payment", methods=["POST"])
+@limiter.limit("60 per minute")
+def payments_verify_payment():
+    try:
+        data = request.get_json(silent=True) or {}
+        order_id = (data.get("razorpay_order_id") or "").strip()
+        payment_id = (data.get("razorpay_payment_id") or "").strip()
+        signature = (data.get("razorpay_signature") or "").strip()
+        artwork_id = data.get("artwork_id")
+
+        if not order_id or not payment_id or not signature:
+            return jsonify({"error": "Missing Razorpay fields"}), 400
+        if artwork_id is None:
+            return jsonify({"error": "artwork_id is required"}), 400
+        try:
+            artwork_id = int(artwork_id)
+        except Exception:
+            return jsonify({"error": "artwork_id must be an integer"}), 400
+
+        result = record_successful_acquisition(
+            artwork_id=artwork_id,
+            order_id=order_id,
+            payment_id=payment_id,
+            signature=signature,
+        )
+        if not result.get("ok"):
+            return jsonify({"success": False, "reason": result.get("reason")}), 400
+
+        return jsonify({
+            "success": True,
+            "message": "Acquisition Recorded",
+            "provenance_updated": True,
+            **result,
+        })
+
+    except Exception as exc:
+        log.error("payments_verify_payment error: %s", exc)
+        return jsonify({"error": "Payment verification failed", "detail": str(exc)}), 500
 
 ADMIN_KEY = os.getenv("ADMIN_KEY")
 if not ADMIN_KEY:
@@ -1114,11 +1186,24 @@ def add_artwork():
             cur.close()
             conn.close()
 
+        # Fetch artwork id (needed for commerce flows)
+        artwork_id = None
+        conn_id = get_db_connection()
+        cur_id = dict_cursor(conn_id)
+        try:
+            cur_id.execute("SELECT id FROM artworks WHERE cert_hash = %s", (cert_hash,))
+            row_id = cur_id.fetchone()
+            artwork_id = (row_id["id"] if row_id else None)
+        finally:
+            cur_id.close()
+            conn_id.close()
+
         # Also write to certificates table so verify_hash() finds it immediately
         save_to_db(cert_hash, tx_id, "artwork", issued_at, ipfs_cid)
 
         return jsonify({
             "success":      True,
+            "artwork_id":   artwork_id,
             "cert_hash":    cert_hash,
             "tx_id":        tx_id,
             "ipfs_cid":     ipfs_cid,
