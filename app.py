@@ -69,15 +69,20 @@ from queue_service import queue_batch, get_batch_status
 from ipfs_service import pin_with_retry
 import db_migrations
 from db import get_db_connection, dict_cursor
+from models import db, Artwork, ProvenanceEvent
 from services.payment_service import create_acquisition_order, record_successful_acquisition
+from x402_service import create_payment_requirements, verify_x402_payment
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 # ── App + rate limiter ────────────────────────────────────────────────────────
 app = Flask(__name__)
+app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL")
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 frontend_url=os.getenv("FRONTEND_URL",
                     "https://frontend-6g47ukzox-anushaa-ms-projects.vercel.app")
+db.init_app(app)
 
 CORS(
     app,
@@ -94,8 +99,139 @@ limiter = Limiter(
     default_limits=["100 per day"],
 )
 
+ARTWORK = {
+    "id": "art_001",
+    "title": "Handwoven Textile",
+    "price_usdc": 1,
+}
+
+
+def _seed_x402_artwork() -> None:
+    artwork = db.session.get(Artwork, ARTWORK["id"])
+    if artwork is not None:
+        return
+
+    db.session.add(
+        Artwork(
+            id=ARTWORK["id"],
+            title=ARTWORK["title"],
+            current_owner=None,
+            created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+    )
+    db.session.commit()
+
+
+def _record_x402_acquisition(wallet_address: str, settlement_reference: str | None) -> dict:
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    artwork = db.session.get(Artwork, ARTWORK["id"])
+    if artwork is None:
+        raise ValueError("Demo artwork not found")
+
+    artwork.current_owner = wallet_address
+    db.session.add(
+        ProvenanceEvent(
+            artwork_id=artwork.id,
+            owner_wallet=wallet_address,
+            event_type="acquisition_recorded",
+            settlement_reference=settlement_reference,
+            created_at=now,
+        )
+    )
+    db.session.commit()
+    return {
+        "status": "ownership_transferred",
+        "artwork_id": artwork.id,
+        "owner": wallet_address,
+        "provenance_event": "acquisition_recorded",
+        "network": "algorand-testnet",
+        "updated_at": now,
+    }
+
 
 # ── Commerce (Domestic Settlement v1 — Razorpay UPI) ─────────────────────────
+
+@app.route("/acquire-artwork", methods=["POST"])
+@limiter.limit("30 per minute")
+def acquire_artwork():
+    try:
+        payload = request.get_json(silent=True) or {}
+        requested_artwork_id = payload.get("artwork_id", ARTWORK["id"])
+
+        if requested_artwork_id != ARTWORK["id"]:
+            return jsonify(
+                {
+                    "error": "Artwork not found",
+                    "available_artwork_id": ARTWORK["id"],
+                }
+            ), 404
+
+        verification = verify_x402_payment(request.headers)
+        if not verification.get("verified"):
+            return (
+                jsonify(
+                    {
+                        "error": "Payment Required",
+                        "artwork": ARTWORK,
+                        "payment_requirements": create_payment_requirements(),
+                    }
+                ),
+                402,
+            )
+
+        wallet_address = verification.get("wallet_address") or "wallet_address"
+        settlement = verification.get("settlement") or {}
+        result = _record_x402_acquisition(
+            wallet_address,
+            settlement.get("settlement_reference"),
+        )
+        result["settlement"] = verification.get("settlement")
+        return jsonify(result), 200
+    except Exception as exc:
+        db.session.rollback()
+        log.error("acquire_artwork error: %s", exc)
+        return jsonify({"error": "Artwork acquisition failed", "detail": str(exc)}), 500
+
+
+@app.route("/artwork/<artwork_id>", methods=["GET"])
+@limiter.limit("60 per minute")
+def get_x402_artwork(artwork_id: str):
+    try:
+        artwork = db.session.get(Artwork, artwork_id)
+        if artwork is None:
+            return jsonify({"error": "Artwork not found"}), 404
+
+        history = (
+            ProvenanceEvent.query
+            .filter_by(artwork_id=artwork_id)
+            .order_by(ProvenanceEvent.created_at.asc(), ProvenanceEvent.id.asc())
+            .all()
+        )
+        return jsonify(
+            {
+                "artwork": {
+                    "id": artwork.id,
+                    "title": artwork.title,
+                    "created_at": artwork.created_at,
+                },
+                "current_owner": artwork.current_owner,
+                "provenance_history": [
+                    {
+                        "id": event.id,
+                        "artwork_id": event.artwork_id,
+                        "owner_wallet": event.owner_wallet,
+                        "event_type": event.event_type,
+                        "settlement_reference": event.settlement_reference,
+                        "created_at": event.created_at,
+                    }
+                    for event in history
+                ],
+            }
+        ), 200
+    except Exception as exc:
+        log.error("get_x402_artwork error: %s", exc)
+        return jsonify({"error": "Could not fetch artwork", "detail": str(exc)}), 500
+
 
 @app.route("/api/payments/create-order", methods=["POST"])
 @limiter.limit("30 per minute")
@@ -178,6 +314,9 @@ if not ADMIN_KEY:
 db_migrations.run_migrations()
 init_db()
 init_did_db()
+with app.app_context():
+    db.create_all()
+    _seed_x402_artwork()
 
 
 # ── Image normalisation helper ────────────────────────────────────────────────

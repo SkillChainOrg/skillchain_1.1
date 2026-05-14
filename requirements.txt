@@ -37,6 +37,7 @@ fastmcp==3.1.1
 ffmpy==1.0.0
 filelock==3.25.2
 Flask==3.1.2
+Flask-SQLAlchemy==3.1.1
 flask-limiter
 fonttools==4.61.1
 fsspec==2026.2.0
@@ -157,5 +158,4 @@ psycopg2-binary
 flask-cors
 
 razorpay
-
 
