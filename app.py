@@ -77,7 +77,17 @@ log = logging.getLogger(__name__)
 # ── App + rate limiter ────────────────────────────────────────────────────────
 app = Flask(__name__)
 if CORS:
-    CORS(app, resources={r"/*": {"origins": "*"}})
+    # Frontend hosted separately on Vercel — allow only production UI origin
+    CORS(
+        app,
+        resources={
+            r"/*": {
+                "origins": [
+                    "https://frontend-6g47ukzox-anushaa-ms-projects.vercel.app"
+                ]
+            }
+        }
+    )
 
 limiter = Limiter(
     app=app,
@@ -620,7 +630,11 @@ def digilocker_verify():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return jsonify({
+        "service":"SkillChain API",
+        "status":"online",
+        "frontend":"https://frontend-6g47ukzox-anushaa-ms-projects.vercel.app"
+    })
 
 
 @app.route("/issue", methods=["POST"])
