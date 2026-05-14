@@ -76,18 +76,17 @@ log = logging.getLogger(__name__)
 
 # ── App + rate limiter ────────────────────────────────────────────────────────
 app = Flask(__name__)
-if CORS:
-    # Frontend hosted separately on Vercel — allow only production UI origin
-    CORS(
-        app,
-        resources={
-            r"/*": {
-                "origins": [
-                    "https://frontend-6g47ukzox-anushaa-ms-projects.vercel.app"
-                ]
-            }
+frontend_url=os.getenv("FRONTEND_URL",
+                    "https://frontend-6g47ukzox-anushaa-ms-projects.vercel.app")
+
+CORS(
+    app,
+    resources={
+        r"/*":{
+            "origins":[frontend_url]
         }
-    )
+    }
+)
 
 limiter = Limiter(
     app=app,
@@ -633,7 +632,7 @@ def index():
     return jsonify({
         "service":"SkillChain API",
         "status":"online",
-        "frontend":"https://frontend-6g47ukzox-anushaa-ms-projects.vercel.app"
+        "frontend": frontend_url
     })
 
 
