@@ -69,6 +69,7 @@ def _worker():
                     institution_id=job.get("institution_id"),
                     cert_number=job.get("cert_number"),
                     issued_to=job.get("issued_to"),
+                    integrity_hash=job.get("integrity_hash"),
                 )
 
                 with _lock:

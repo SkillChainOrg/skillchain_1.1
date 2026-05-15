@@ -234,6 +234,24 @@ def generate_hmac(cert_hash: str) -> str:
     ).hexdigest()
 
 
+def invalid_verification_result(
+    reason: str,
+    *,
+    integrity_hash_match: bool = False,
+    tampered_detected: bool = False,
+    **extra,
+) -> dict:
+    """Return a stable invalid verification payload with integrity fields."""
+    return {
+        "valid": False,
+        "verified": False,
+        "reason": reason,
+        "integrity_hash_match": integrity_hash_match,
+        "tampered_detected": tampered_detected,
+        **extra,
+    }
+
+
 # ── Core: anchor a certificate hash on Algorand ───────────────────────────────
 
 def anchor_hash(
@@ -244,6 +262,7 @@ def anchor_hash(
     institution_id: str | None = None,
     cert_number: str | None = None,
     issued_to: str | None = None,
+    integrity_hash: str | None = None,
 ) -> dict:
     """
     Anchor a certificate hash on Algorand and pin metadata to IPFS.
@@ -294,6 +313,7 @@ def anchor_hash(
         "hmac_value":  hmac_value,
         "cert_number": cert_number or "",
         "issued_to":   issued_to or "",
+        "integrity_hash": integrity_hash or "",
     }
 
     ipfs_cid = pin_with_retry(metadata)
@@ -383,7 +403,7 @@ def compute_trust_score(
 
 # ── Core: verify a certificate hash ──────────────────────────────────────────
 
-def verify_hash(cert_hash: str) -> dict:
+def verify_hash(cert_hash: str, uploaded_integrity_hash: str | None = None) -> dict:
     """
     Verify a certificate by its SHA-256 image hash.
 
@@ -400,44 +420,46 @@ def verify_hash(cert_hash: str) -> dict:
             cert_hash,
             row["tx_id"],
             row["ipfs_cid"],
+            uploaded_integrity_hash=uploaded_integrity_hash,
             # FIX A: hmac_value not fetched from DB — _verify_full recomputes it
         )
-    return _verify_via_indexer(cert_hash)
+    return _verify_via_indexer(cert_hash, uploaded_integrity_hash=uploaded_integrity_hash)
 
 
 def _verify_full(
     cert_hash: str,
     tx_id: str,
     ipfs_cid: str,
+    uploaded_integrity_hash: str | None = None,
 ) -> dict:
     """Full verification against IPFS metadata and Algorand transaction.
     Never raises — all failures return a safe JSON-serialisable dict.
     """
     # Guard: reject obviously fake / empty tx IDs before hitting the indexer.
     if not is_valid_txid(tx_id):
-        return {
-            "verified":        False,
-            "chain_confirmed": False,
-            "error":           "Invalid transaction ID — cannot verify on-chain.",
-        }
+        return invalid_verification_result(
+            "Invalid transaction ID — cannot verify on-chain.",
+            chain_confirmed=False,
+            error="Invalid transaction ID — cannot verify on-chain.",
+        )
 
     # ── Indexer lookup (retry + fallback) ─────────────────────────────────
     try:
         txn_obj = _txn_from_indexer(tx_id)
     except Exception as exc:
         log.error("Indexer lookup failed for tx_id=%s: %s", tx_id, exc)
-        return {
-            "verified":        False,
-            "chain_confirmed": False,
-            "error":           "Blockchain lookup failed",
-        }
+        return invalid_verification_result(
+            "Blockchain lookup failed",
+            chain_confirmed=False,
+            error="Blockchain lookup failed",
+        )
 
     if not txn_obj:
-        return {
-            "verified":        False,
-            "chain_confirmed": False,
-            "error":           "Transaction not found on-chain",
-        }
+        return invalid_verification_result(
+            "Transaction not found on-chain",
+            chain_confirmed=False,
+            error="Transaction not found on-chain",
+        )
 
     note_raw = txn_obj.get("note", "")
 
@@ -445,7 +467,7 @@ def _verify_full(
 
     if not note:
         log.error("Note decode failed | raw=%s", note_raw)
-        return {"valid": False, "reason": "Malformed transaction note"}
+        return invalid_verification_result("Malformed transaction note")
 
     ipfs_cid_from_note = note.get("cid") or ipfs_cid
 
@@ -454,14 +476,34 @@ def _verify_full(
         meta = fetch_certificate_metadata(ipfs_cid_from_note)
     except Exception as exc:
         log.error("IPFS fetch failed for cid=%s: %s", ipfs_cid_from_note, exc)
-        return {
-            "verified":        False,
-            "chain_confirmed": bool(txn_obj.get("confirmed-round")),
-            "error":           "IPFS metadata unavailable",
-        }
+        return invalid_verification_result(
+            "IPFS metadata unavailable",
+            chain_confirmed=bool(txn_obj.get("confirmed-round")),
+            error="IPFS metadata unavailable",
+        )
 
     if meta.get("cert_hash") != cert_hash:
-        return {"valid": False, "reason": "IPFS hash mismatch — data tampered"}
+        return invalid_verification_result(
+            "IPFS hash mismatch — data tampered",
+            tampered_detected=True,
+        )
+
+    certified_integrity_hash = (
+        meta.get("integrity_hash")
+        or meta.get("binary_hash")
+        or meta.get("file_hash")
+        or ""
+    )
+    integrity_hash_match = bool(
+        uploaded_integrity_hash
+        and certified_integrity_hash
+        and hmac_lib.compare_digest(uploaded_integrity_hash, certified_integrity_hash)
+    )
+    tampered_detected = bool(
+        uploaded_integrity_hash
+        and certified_integrity_hash
+        and not integrity_hash_match
+    )
 
     # ── HMAC tamper-evidence check ─────────────────────────────────────────
     recomputed = generate_hmac(cert_hash)
@@ -503,10 +545,18 @@ def _verify_full(
             conn_a.close()
 
     if reg_row and reg_row["revoked"] == 1:
-        return {"valid": False, "reason": "issuer_revoked"}
+        return invalid_verification_result(
+            "issuer_revoked",
+            integrity_hash_match=integrity_hash_match,
+            tampered_detected=tampered_detected,
+        )
 
     if artisan_row and artisan_row["status"] != "approved":
-        return {"valid": False, "reason": "artisan_not_approved"}
+        return invalid_verification_result(
+            "artisan_not_approved",
+            integrity_hash_match=integrity_hash_match,
+            tampered_detected=tampered_detected,
+        )
 
     # Determine issuer-active flag for trust score
     if reg_row:
@@ -529,8 +579,10 @@ def _verify_full(
     )
 
     sig_valid = provenance.get("verified") or False
+    chain_confirmed = bool(txn_obj.get("confirmed-round"))
+    provenance_valid = bool(chain_confirmed and hmac_ok and sig_valid and issuer_active)
     trust     = compute_trust_score(
-        chain_confirmed=bool(txn_obj.get("confirmed-round")),
+        chain_confirmed=chain_confirmed,
         hmac_ok=hmac_ok,
         signature_valid=bool(sig_valid),
         issuer_active=issuer_active,
@@ -541,8 +593,14 @@ def _verify_full(
     artisan_did  = meta.get("artisan_did")  or meta.get("issuer_did")
     artisan_name = meta.get("artisan")      or meta.get("issued_by")
 
+    valid = bool(provenance_valid and integrity_hash_match)
+
     return {
-        "valid":           True,
+        "valid":           valid,
+        "verified":        valid,
+        "provenance_valid": provenance_valid,
+        "integrity_hash_match": integrity_hash_match,
+        "tampered_detected": tampered_detected,
         "hmac_valid":      hmac_ok,
         "signature_valid": sig_valid,
         "wallet_version":  wallet_version,
@@ -562,7 +620,7 @@ def _verify_full(
     }
 
 
-def _verify_via_indexer(cert_hash: str) -> dict:
+def _verify_via_indexer(cert_hash: str, uploaded_integrity_hash: str | None = None) -> dict:
     """Fallback: scan Algorand indexer when cert is not in local DB."""
     address = get_issuer_address()
 
@@ -598,28 +656,23 @@ def _verify_via_indexer(cert_hash: str) -> dict:
                 meta = fetch_certificate_metadata(ipfs_cid)
 
                 if meta.get("cert_hash") == cert_hash:
-                    return {
-                        "valid":           True,
-                        "tx_id":           txn["id"],
-                        "confirmed_round": txn.get("confirmed-round"),
-                        "artisan_did":     meta.get("artisan_did") or meta.get("issuer_did"),
-                        "artisan":         meta.get("artisan") or meta.get("issued_by"),
-                        "doc_type":        meta.get("doc_type"),
-                        "issued_at":       meta.get("issued_at"),
-                        "cert_number":     meta.get("cert_number"),
-                        "ipfs_cid":        ipfs_cid,
-                        "source":          "algorand_indexer_fallback",
-                        "explorer_url":    f"https://testnet.explorer.perawallet.app/tx/{txn['id']}",
-                    }
+                    result = _verify_full(
+                        cert_hash,
+                        txn["id"],
+                        ipfs_cid,
+                        uploaded_integrity_hash=uploaded_integrity_hash,
+                    )
+                    result.setdefault("source", "algorand_indexer_fallback")
+                    return result
 
             except Exception as e:
                 log.error("Transaction parse failed: %s | txn=%s", e, txn)
                 continue
 
     except Exception as e:
-        return {"valid": False, "reason": f"Indexer error: {str(e)}"}
+        return invalid_verification_result(f"Indexer error: {str(e)}")
 
-    return {"valid": False, "reason": "Certificate not found"}
+    return invalid_verification_result("Certificate not found")
 
 # ── DigiLocker verification path ──────────────────────────────────────────────
 
@@ -641,10 +694,9 @@ def verify_by_cert_number(
     """
     row = lookup_by_cert_number(cert_number)
     if not row:
-        return {
-            "valid":  False,
-            "reason": f"No certificate found with cert_number='{cert_number}'",
-        }
+        return invalid_verification_result(
+            f"No certificate found with cert_number='{cert_number}'",
+        )
 
     stored_cert_hash = row["cert_hash"]
     tx_id            = row["tx_id"]
@@ -654,11 +706,12 @@ def verify_by_cert_number(
     # Guard: only do image-match when a hash was actually submitted.
     # An empty string will never match a SHA-256 hash, so we check explicitly.
     if submitted_cert_hash and submitted_cert_hash != stored_cert_hash:
-        return {
-            "valid":  False,
-            "reason": "Certificate image does not match the issued certificate",
-            "detail": "The submitted file has been modified or is not the original",
-        }
+        return invalid_verification_result(
+            "Certificate image does not match the issued certificate",
+            integrity_hash_match=False,
+            tampered_detected=True,
+            detail="The submitted file has been modified or is not the original",
+        )
 
     result = _verify_full(stored_cert_hash, tx_id, ipfs_cid)
     if not result.get("valid"):

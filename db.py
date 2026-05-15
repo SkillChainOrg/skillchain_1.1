@@ -32,7 +32,14 @@ def is_production_deployment() -> bool:
 
 
 def _connect_postgres(url: str):
-    return psycopg2.connect(url, connect_timeout=3)
+    return psycopg2.connect(
+                        url,
+                        connect_timeout=15,
+                        keepalives=1,
+                        keepalives_idle=30,
+                        keepalives_interval=10,
+                        keepalives_count=5
+                    )
 
 
 def _sqlite_query(query: str) -> str:

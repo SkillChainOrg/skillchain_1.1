@@ -30,6 +30,11 @@ if [ ! -f "test.jpg" ]; then
   exit 1
 fi
 
+# ---------- Vault Health ----------
+print_step "Vault Service Health"
+
+curl -s http://127.0.0.1:8000/health | jq
+
 # ---------- 1. Register Artisan ----------
 print_step "1. Register Artisan"
 
@@ -65,6 +70,23 @@ fail_if_empty "$ARTISAN_DID" "Failed to approve artisan"
 
 echo "Artisan DID: $ARTISAN_DID"
 
+# ---------- Vault Storage Test ----------
+print_step "Vault Secret Storage"
+
+VAULT_RESPONSE=$(curl -s -X POST http://127.0.0.1:8000/store-test-secret \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"artisan_id\": \"$ARTISAN_ID\",
+    \"secret\": \"$ARTISAN_DID\"
+  }")
+
+echo "$VAULT_RESPONSE" | jq
+
+print_step "Vault Secret Retrieval"
+
+curl -s \
+"http://127.0.0.1:8000/load-test-secret/$ARTISAN_ID" | jq
+
 # ---------- 3. Add Artwork ----------
 print_step "3. Add Artwork"
 
@@ -93,6 +115,14 @@ VERIFY_RESPONSE=$(curl -s -X POST "$BASE/verify" \
 
 echo "$VERIFY_RESPONSE" | jq
 
+VERIFY_VALID=$(echo "$VERIFY_RESPONSE" | jq -r '.valid')
+VERIFY_INTEGRITY=$(echo "$VERIFY_RESPONSE" | jq -r '.integrity_hash_match')
+
+if [ "$VERIFY_VALID" != "true" ] || [ "$VERIFY_INTEGRITY" != "true" ]; then
+  echo "❌ Expected original upload verification to succeed with integrity match"
+  exit 1
+fi
+
 
 
 # ---------- 5. Negative Test ----------
@@ -105,6 +135,15 @@ TAMPER_RESPONSE=$(curl -s -X POST "$BASE/verify" \
   -F "certificate=@tampered.jpg")
 
 echo "$TAMPER_RESPONSE" | jq
+
+TAMPER_VALID=$(echo "$TAMPER_RESPONSE" | jq -r '.valid')
+TAMPER_INTEGRITY=$(echo "$TAMPER_RESPONSE" | jq -r '.integrity_hash_match')
+TAMPER_DETECTED=$(echo "$TAMPER_RESPONSE" | jq -r '.tampered_detected')
+
+if [ "$TAMPER_VALID" != "false" ] || [ "$TAMPER_INTEGRITY" != "false" ] || [ "$TAMPER_DETECTED" != "true" ]; then
+  echo "❌ Expected tampered upload verification to fail with tampering detected"
+  exit 1
+fi
 
 # ---------- 6. x402 Acquisition Challenge ----------
 print_step "6. x402 Acquisition Challenge"

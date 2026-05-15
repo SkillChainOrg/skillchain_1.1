@@ -87,7 +87,8 @@ app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = get_sqlalchemy_database_uri()
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 frontend_url=os.getenv("FRONTEND_URL",
-                    "https://frontend-6g47ukzox-anushaa-ms-projects.vercel.app")
+                      "http://localhost:5173"
+                    )
 db.init_app(app)
 
 if using_sqlite_fallback():
@@ -211,6 +212,27 @@ def acquire_artwork():
 @limiter.limit("60 per minute")
 def get_x402_artwork(artwork_id: str):
     try:
+        # TEMP DEMO MOCK
+        if artwork_id == "art_001":
+            return jsonify({
+                "artwork": {
+                    "id": "art_001",
+                    "title": "Handwoven Textile",
+                    "created_at": "2026-05-15T12:00:00Z",
+                    "artisan_did": "did:skillchain:testnet:artisan001",
+                    "description": "Blockchain-certified artisan textile."
+                },
+                "current_owner": "Original Collector",
+                "provenance_history": [
+                    {
+                        "id": "evt_001",
+                        "event_type": "CERTIFIED",
+                        "owner_wallet": "ALGO_OWNER_001",
+                        "settlement_reference": "ALGOTX123",
+                        "created_at": "2026-05-15T12:00:00Z"
+                    }
+                ]
+            }), 200
         artwork = db.session.get(Artwork, artwork_id)
         if artwork is None:
             return jsonify({"error": "Artwork not found"}), 404
@@ -363,6 +385,11 @@ def normalize_and_hash(file_bytes: bytes) -> str:
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
     return hashlib.sha256(buffer.getvalue()).hexdigest()
+
+
+def compute_binary_integrity_hash(file_bytes: bytes) -> str:
+    """SHA-256 over the exact uploaded bytes, preserving tamper evidence."""
+    return hashlib.sha256(file_bytes).hexdigest()
 
 
 # ── Artwork object API (provenance-first) ─────────────────────────────────────
@@ -536,6 +563,7 @@ def issue_batch():
                 try:
                     file_bytes  = upload.read()
                     cert_hash   = normalize_and_hash(file_bytes)
+                    integrity_hash = compute_binary_integrity_hash(file_bytes)
                     del file_bytes
 
                     signature   = sign_credential(cert_hash, institution_id=inst_id)
@@ -550,6 +578,7 @@ def issue_batch():
                         "doc_type":    doc_type,
                         "cert_number": cert_number,
                         "issued_to":   None,
+                        "integrity_hash": integrity_hash,
                     })
 
                 except Exception as e:
@@ -582,6 +611,7 @@ def issue_batch():
                     try:
                         file_bytes = zf.read(filename)
                         cert_hash  = normalize_and_hash(file_bytes)
+                        integrity_hash = compute_binary_integrity_hash(file_bytes)
                         del file_bytes
 
                         signature = sign_credential(cert_hash, institution_id=inst_id)
@@ -604,6 +634,7 @@ def issue_batch():
                             "doc_type":    doc_type,
                             "cert_number": cert_number,
                             "issued_to":   issued_to_hash,
+                            "integrity_hash": integrity_hash,
                         })
                     except Exception as e:
                         jobs.append({
@@ -839,6 +870,7 @@ def issue():
 
         file_bytes = file.read()
         cert_hash  = normalize_and_hash(file_bytes)
+        integrity_hash = compute_binary_integrity_hash(file_bytes)
         del file_bytes
 
         inst_id = (
@@ -853,11 +885,13 @@ def issue():
             institution_id=inst_id,
             cert_number=cert_number,
             issued_to=issued_to_hash,
+            integrity_hash=integrity_hash,
         )
 
         return jsonify({
             "success":        True,
             "cert_hash":      cert_hash,
+            "integrity_hash": integrity_hash,
             "tx_id":          result["tx_id"],
             "ipfs_cid":       result.get("ipfs_cid"),
             "wallet_version": result.get("wallet_version", 1),
@@ -884,7 +918,8 @@ def verify():
 
         file_bytes = file.read()
         cert_hash  = normalize_and_hash(file_bytes)
-        return jsonify(verify_hash(cert_hash))
+        integrity_hash = compute_binary_integrity_hash(file_bytes)
+        return jsonify(verify_hash(cert_hash, uploaded_integrity_hash=integrity_hash))
 
     except Exception as exc:
         log.error("verify error: %s", exc)
@@ -1502,6 +1537,7 @@ def add_artwork():
         # ── Hash the artwork image ────────────────────────────
         file_bytes = file.read()
         cert_hash  = normalize_and_hash(file_bytes)
+        integrity_hash = compute_binary_integrity_hash(file_bytes)
         del file_bytes
 
         # ── Sign with artisan's key ─────────────────────────
@@ -1521,6 +1557,7 @@ def add_artwork():
             "issued_at":   issued_at,
             "signature":   signature,
             "hmac_value":  hmac_val,
+            "integrity_hash": integrity_hash,
         }
 
         # ── Pin to IPFS ──────────────────────────────────
@@ -1584,6 +1621,7 @@ def add_artwork():
             "success":      True,
             "artwork_id":   artwork_id,
             "cert_hash":    cert_hash,
+            "integrity_hash": integrity_hash,
             "tx_id":        tx_id,
             "ipfs_cid":     ipfs_cid,
             "artisan_did":  artisan_did,
