@@ -28,6 +28,15 @@ _KV_PREFIX   = "skillchain"
 log = logging.getLogger(__name__)
 
 
+def _safe_preview(value: str | bytes | bytearray | None, limit: int = 8) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, str):
+        return value[: limit * 2] or "empty-str"
+    raw = bytes(value[:limit])
+    return raw.hex() if raw else "empty"
+
+
 def is_vault_enabled() -> bool:
     """Return True when Vault is the active key backend."""
     return _VAULT_ENABLED
@@ -129,7 +138,15 @@ def read_key(institution_id: str) -> bytes:
                     f"at '{_MOUNT_POINT}/{path}'"
                 )
             try:
-                return bytes.fromhex(hex_val)
+                key = bytes.fromhex(hex_val)
+                log.info(
+                    "Vault key read | institution_id=%s source=private_key_hex raw_len=%s decoded_len=%s preview=%s",
+                    institution_id,
+                    len(hex_val),
+                    len(key),
+                    key[:8].hex() if key else "empty",
+                )
+                return key
             except ValueError as exc:
                 raise RuntimeError(
                     f"Vault private_key_hex is not valid hex at '{_MOUNT_POINT}/{path}'"
@@ -143,12 +160,45 @@ def read_key(institution_id: str) -> bytes:
                     "Vault key for institution_id=%s uses legacy bytes format; "
                     "re-run migrate_keys_to_vault to upgrade.", institution_id
                 )
-                return bytes(raw_val)
+                key = bytes(raw_val)
+                log.info(
+                    "Vault key read | institution_id=%s source=private_key_bytes.bytes decoded_len=%s preview=%s",
+                    institution_id,
+                    len(key),
+                    key[:8].hex() if key else "empty",
+                )
+                return key
             if isinstance(raw_val, str):
-                # hvac may have stored bytes as a base64/hex string depending on version
+                # hvac may have stored bytes as a hex or base64 string depending on version
                 import base64 as _b64
                 try:
-                    return _b64.b64decode(raw_val)
+                    key = bytes.fromhex(raw_val)
+                    log.info(
+                        "Vault key read | institution_id=%s source=private_key_bytes.hex raw_len=%s decoded_len=%s preview=%s",
+                        institution_id,
+                        len(raw_val),
+                        len(key),
+                        key[:8].hex() if key else "empty",
+                    )
+                    return key
+                except ValueError:
+                    pass
+                try:
+                    log.info(
+                        "Base64 decode attempt | caller=vault_client.read_key.private_key_bytes.base64 type=%s len=%s preview=%s",
+                        type(raw_val).__name__,
+                        len(raw_val),
+                        _safe_preview(raw_val),
+                    )
+                    key = _b64.b64decode(raw_val)
+                    log.info(
+                        "Vault key read | institution_id=%s source=private_key_bytes.base64 raw_len=%s decoded_len=%s preview=%s",
+                        institution_id,
+                        len(raw_val),
+                        len(key),
+                        key[:8].hex() if key else "empty",
+                    )
+                    return key
                 except Exception:
                     pass  # not base64 — fall through to error
 

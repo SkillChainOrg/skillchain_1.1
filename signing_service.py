@@ -27,15 +27,16 @@ Vault KV v2 paths:
 import os
 import base64
 import hashlib
+import logging
 
 from algosdk import mnemonic as mn, account
-from algosdk import account
-import base64
 from dotenv import load_dotenv
+from nacl.signing import SigningKey
 
 from db import get_db_connection
 
 load_dotenv()
+log = logging.getLogger(__name__)
 
 # ── Identity type constants ────────────────────────────────────────────────────
 IDENTITY_SYSTEM      = "system"
@@ -106,7 +107,9 @@ def _load_from_db(identity_type: str, identity_id: str | None) -> bytes:
                 "MNEMONIC is not set and VAULT_ENABLED=false. "
                 "Set MNEMONIC for local development or enable Vault for production."
             )
-        return mn.to_private_key(phrase)
+        key = mn.to_private_key(phrase)
+        _log_key_diagnostics("load_from_db.system.mnemonic", key)
+        return key
 
     from key_vault import decrypt_key   # raises if KEY_ENCRYPTION_SECRET missing
 
@@ -130,12 +133,18 @@ def _load_from_db(identity_type: str, identity_id: str | None) -> bytes:
                 "Ensure the artisan was approved with KEY_ENCRYPTION_SECRET set, "
                 "or switch to Vault (VAULT_ENABLED=true)."
             )
+        log.info(
+            "AES key lookup | identity_type=artisan artisan_id=%s ciphertext_type=%s ciphertext_len=%s nonce_type=%s nonce_len=%s ciphertext_preview=%s nonce_preview=%s",
+            full_artisan_id,
+            type(row[0]).__name__,
+            len(row[0]) if row[0] is not None and hasattr(row[0], "__len__") else "unknown",
+            type(row[1]).__name__,
+            len(row[1]) if row[1] is not None and hasattr(row[1], "__len__") else "unknown",
+            _safe_hex_preview(row[0]),
+            _safe_hex_preview(row[1]),
+        )
         key = decrypt_key(row[0], row[1])
-
-        print("TYPE:", type(key))
-        print("LEN:", len(key))
-        print("RAW:", key)
-
+        _log_key_diagnostics("load_from_db.artisan.decrypted", key)
         return key
 
     if identity_type == IDENTITY_INSTITUTION:
@@ -157,7 +166,19 @@ def _load_from_db(identity_type: str, identity_id: str | None) -> bytes:
                 "Ensure the institution was approved with KEY_ENCRYPTION_SECRET set, "
                 "or switch to Vault (VAULT_ENABLED=true)."
             )
-        return decrypt_key(row[0], row[1])
+        log.info(
+            "AES key lookup | identity_type=institution institution_id=%s ciphertext_type=%s ciphertext_len=%s nonce_type=%s nonce_len=%s ciphertext_preview=%s nonce_preview=%s",
+            identity_id,
+            type(row[0]).__name__,
+            len(row[0]) if row[0] is not None and hasattr(row[0], "__len__") else "unknown",
+            type(row[1]).__name__,
+            len(row[1]) if row[1] is not None and hasattr(row[1], "__len__") else "unknown",
+            _safe_hex_preview(row[0]),
+            _safe_hex_preview(row[1]),
+        )
+        key = decrypt_key(row[0], row[1])
+        _log_key_diagnostics("load_from_db.institution.decrypted", key)
+        return key
 
     raise ValueError(f"Unknown identity_type: {identity_type!r}")
 
@@ -198,9 +219,245 @@ def resolve_private_key(identity_type: str, identity_id: str | None = None) -> b
 
     if is_vault_enabled():
         vault_path = _vault_path_for(identity_type, identity_id)
-        return read_key(vault_path)      # hard failure if Vault unreachable
+        key = read_key(vault_path)      # hard failure if Vault unreachable
+        _log_key_diagnostics(f"resolve_private_key.vault.{vault_path}", key)
+        return key
 
     return _load_from_db(identity_type, identity_id)
+
+
+def _looks_like_hex(text: str) -> bool:
+    if len(text) % 2 != 0:
+        return False
+    try:
+        bytes.fromhex(text)
+        return True
+    except ValueError:
+        return False
+
+
+def _safe_hex_preview(data: bytes | bytearray | str | None, limit: int = 8) -> str:
+    if data is None:
+        return "none"
+    if isinstance(data, str):
+        preview = data[: limit * 2]
+        return preview if preview else "empty-str"
+    raw = bytes(data[:limit])
+    return raw.hex() if raw else "empty-bytes"
+
+
+def _logged_b64decode(value: str, *, caller: str) -> bytes:
+    log.info(
+        "Base64 decode attempt | caller=%s type=%s len=%s preview=%s",
+        caller,
+        type(value).__name__,
+        len(value) if hasattr(value, "__len__") else "unknown",
+        _safe_hex_preview(value),
+    )
+    return base64.b64decode(value, validate=True)
+
+
+def _classify_key_material(data: bytes | bytearray | str) -> str:
+    if isinstance(data, str):
+        text = data.strip()
+        if _looks_like_hex(text):
+            return "hex-string"
+        try:
+            base64.b64decode(text, validate=True)
+            return "base64-string"
+        except Exception:
+            return "plain-string"
+
+    raw = bytes(data)
+    if len(raw) == 32:
+        return "raw-32-byte-seed"
+    if len(raw) == 64:
+        return "raw-64-byte-private-key"
+    return "raw-bytes"
+
+
+def _log_key_diagnostics(stage: str, key_material: bytes | bytearray | str) -> None:
+    log.info(
+        "Key diagnostics | stage=%s type=%s len=%s classification=%s preview=%s",
+        stage,
+        type(key_material).__name__,
+        len(key_material) if hasattr(key_material, "__len__") else "unknown",
+        _classify_key_material(key_material),
+        _safe_hex_preview(key_material),
+    )
+
+
+def _coerce_private_key_bytes(private_key: bytes | bytearray | str) -> tuple[bytes, str]:
+    """
+    Normalize stored key material into raw bytes plus an encoding assumption label.
+
+    Supported inputs:
+      - raw 32-byte Ed25519 seed
+      - raw 64-byte Algorand secret key (seed + public key)
+      - hex string / ASCII hex bytes
+      - base64 string / ASCII base64 bytes
+    """
+    assumption = "raw-bytes"
+    candidate: bytes
+    _log_key_diagnostics("coerce.input", private_key)
+
+    if isinstance(private_key, bytearray):
+        candidate = bytes(private_key)
+        assumption = "raw-bytearray"
+    elif isinstance(private_key, bytes):
+        candidate = private_key
+        assumption = "raw-bytes"
+    elif isinstance(private_key, str):
+        text = private_key.strip()
+        if _looks_like_hex(text):
+            candidate = bytes.fromhex(text)
+            assumption = "hex-string"
+        else:
+            candidate = _logged_b64decode(text, caller="_coerce_private_key_bytes")
+            assumption = "base64-string"
+    else:
+        raise TypeError(f"Unsupported private key type: {type(private_key).__name__}")
+
+    if len(candidate) in (32, 64):
+        _log_key_diagnostics("coerce.output.direct", candidate)
+        return candidate, assumption
+
+    if isinstance(private_key, (bytes, bytearray)):
+        raise ValueError(
+            f"Raw private key bytes must be exactly 32 or 64 bytes in _coerce_private_key_bytes; "
+            f"got len={len(candidate)} classification={_classify_key_material(candidate)} "
+            f"preview={_safe_hex_preview(candidate)}"
+        )
+
+    _log_key_diagnostics("coerce.output.fallback", candidate)
+    return candidate, assumption
+
+
+def _normalize_private_key(private_key: bytes | bytearray | str, *, context: str) -> tuple[bytes, bytes, str]:
+    """
+    Return a normalized tuple of (algorand_private_key_64, ed25519_seed_32, assumption).
+    """
+    candidate, assumption = _coerce_private_key_bytes(private_key)
+
+    log.info(
+        "Private key normalization | context=%s type=%s len=%s assumption=%s candidate_len=%s candidate_preview=%s candidate_classification=%s",
+        context,
+        type(private_key).__name__,
+        len(private_key) if hasattr(private_key, "__len__") else "unknown",
+        assumption,
+        len(candidate),
+        _safe_hex_preview(candidate),
+        _classify_key_material(candidate),
+    )
+
+    if len(candidate) == 32:
+        seed = candidate
+        try:
+            signing_key = SigningKey(seed)
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to construct Ed25519 SigningKey in {context}: "
+                f"classification={_classify_key_material(candidate)} decoded_len={len(candidate)} "
+                f"seed_len={len(seed)} preview={_safe_hex_preview(seed)}"
+            ) from exc
+        verify_key = signing_key.verify_key.encode()
+        log.info(
+            "Private key normalization result | context=%s mode=seed32 seed_len=%s verify_key_len=%s seed_preview=%s verify_key_preview=%s",
+            context,
+            len(seed),
+            len(verify_key),
+            _safe_hex_preview(seed),
+            _safe_hex_preview(verify_key),
+        )
+        return seed + verify_key, seed, f"{assumption}->seed32"
+
+    if len(candidate) == 64:
+        seed = candidate[:32]
+        log.info(
+            "Private key normalization result | context=%s mode=algorand64 seed_len=%s key_len=%s seed_preview=%s key_preview=%s",
+            context,
+            len(seed),
+            len(candidate),
+            _safe_hex_preview(seed),
+            _safe_hex_preview(candidate),
+        )
+        return candidate, seed, f"{assumption}->algorand64"
+
+    raise ValueError(
+        f"Unsupported private key length after normalization in {context}: "
+        f"{len(candidate)} bytes; classification={_classify_key_material(candidate)} "
+        f"assumption={assumption} preview={_safe_hex_preview(candidate)}"
+    )
+
+
+def _extract_ed25519_seed(private_key: bytes | bytearray | str, *, context: str) -> tuple[bytes, str]:
+    """
+    Normalize key material specifically for Ed25519 SigningKey(seed).
+
+    Accepted shapes:
+      - 32-byte raw Ed25519 seed
+      - 64-byte Algorand private key, where the first 32 bytes are the seed
+    """
+    key_bytes, assumption = _coerce_private_key_bytes(private_key)
+    original_len = len(key_bytes)
+
+    if original_len == 64:
+        seed = key_bytes[:32]
+        log.info(
+            "Ed25519 seed normalization | context=%s original_key_len=%s normalized_seed_len=%s normalized_64_to_32=%s assumption=%s key_preview=%s seed_preview=%s",
+            context,
+            original_len,
+            len(seed),
+            True,
+            assumption,
+            _safe_hex_preview(key_bytes),
+            _safe_hex_preview(seed),
+        )
+        return seed, f"{assumption}->algorand64_to_seed32"
+
+    if original_len == 32:
+        log.info(
+            "Ed25519 seed normalization | context=%s original_key_len=%s normalized_seed_len=%s normalized_64_to_32=%s assumption=%s seed_preview=%s",
+            context,
+            original_len,
+            original_len,
+            False,
+            assumption,
+            _safe_hex_preview(key_bytes),
+        )
+        return key_bytes, f"{assumption}->seed32"
+
+    raise ValueError(
+        f"Invalid key length for Ed25519 seed normalization in {context}: "
+        f"decoded_len={original_len} expected=32_or_64 classification={_classify_key_material(key_bytes)} "
+        f"assumption={assumption} preview={_safe_hex_preview(key_bytes)}"
+    )
+
+
+def _to_algosdk_private_key_string(private_key_64: bytes, *, context: str) -> str:
+    """
+    Adapt a normalized 64-byte Algorand private key into the format expected by
+    the installed algosdk: base64-encoded string of the 64 raw key bytes.
+    """
+    if len(private_key_64) != 64:
+        raise ValueError(
+            f"Algorand SDK private key adaptation requires 64 bytes in {context}; "
+            f"got len={len(private_key_64)} preview={_safe_hex_preview(private_key_64)}"
+        )
+    encoded = base64.b64encode(private_key_64).decode("ascii")
+    log.info(
+        "Algorand SDK private key adapted | context=%s input_type=%s input_class=%s input_len=%s output_type=%s output_class=%s output_len=%s expected_format=%s output_preview=%s",
+        context,
+        type(private_key_64).__name__,
+        private_key_64.__class__.__name__,
+        len(private_key_64),
+        type(encoded).__name__,
+        encoded.__class__.__name__,
+        len(encoded),
+        "base64-string-of-64-byte-private-key",
+        _safe_hex_preview(encoded),
+    )
+    return encoded
 
 
 # ── Backward-compatibility shim ───────────────────────────────────────────────
@@ -250,19 +507,56 @@ def sign_transaction(txn, institution_id: str | None = None):
         Python cannot guarantee OS-level zeroing; this minimises exposure window.
     """
     private_key = _load_private_key(institution_id)
-    key_buf = bytearray(private_key)
+    normalized_key = None
+    sdk_private_key = None
+    key_buf = None
     try:
-        signed_txn = txn.sign(bytes(key_buf))
+        normalized_key, _, assumption = _normalize_private_key(
+            private_key,
+            context="sign_transaction",
+        )
+        log.info(
+            "Signing transaction | key_type=%s key_len=%s normalized_len=%s assumption=%s normalized_preview=%s",
+            type(private_key).__name__,
+            len(private_key) if hasattr(private_key, "__len__") else "unknown",
+            len(normalized_key),
+            assumption,
+            _safe_hex_preview(normalized_key),
+        )
+        key_buf = bytearray(normalized_key)
+        sdk_private_key = _to_algosdk_private_key_string(
+            bytes(key_buf),
+            context="sign_transaction",
+        )
+        log.info(
+            "Algorand transaction signing call | sdk_function=%s txn_type=%s private_key_type=%s private_key_class=%s expected_format=%s assumption=%s",
+            "txn.sign",
+            txn.__class__.__name__,
+            type(sdk_private_key).__name__,
+            sdk_private_key.__class__.__name__,
+            "base64 string accepted by algosdk.transaction.Transaction.sign",
+            assumption,
+        )
+        try:
+            signed_txn = txn.sign(sdk_private_key)
+        except Exception as exc:
+            raise ValueError(
+                f"Algorand transaction signing failed: normalized_len={len(normalized_key)} "
+                f"assumption={assumption} sdk_key_type={type(sdk_private_key).__name__} "
+                f"sdk_key_class={sdk_private_key.__class__.__name__} preview={_safe_hex_preview(normalized_key)}"
+            ) from exc
     finally:
-        for i in range(len(key_buf)):
-            key_buf[i] = 0
-        del key_buf
+        if key_buf is not None:
+            for i in range(len(key_buf)):
+                key_buf[i] = 0
+            del key_buf
+        if sdk_private_key is not None:
+            del sdk_private_key
+        if normalized_key is not None:
+            del normalized_key
         del private_key
     return signed_txn
 
-
-from nacl.signing import SigningKey
-import base64
 
 def sign_credential_hash(cert_hash: str, institution_id: str | None = None) -> str:
     """
@@ -272,29 +566,38 @@ def sign_credential_hash(cert_hash: str, institution_id: str | None = None) -> s
     """
 
     private_key = _load_private_key(institution_id)
+    seed = None
 
     try:
-        # Debug
-        print("\n==== SIGNING DEBUG ====")
-        print("TYPE:", type(private_key))
-        print("LEN:", len(private_key))
-        print("======================\n")
+        _log_key_diagnostics("sign_credential_hash.private_key", private_key)
+        seed, assumption = _extract_ed25519_seed(
+            private_key,
+            context="sign_credential_hash",
+        )
+        log.info(
+            "Signing credential hash | key_type=%s key_len=%s normalized_seed_len=%s assumption=%s seed_preview=%s",
+            type(private_key).__name__,
+            len(private_key) if hasattr(private_key, "__len__") else "unknown",
+            len(seed),
+            assumption,
+            _safe_hex_preview(seed),
+        )
 
-        # ✅ Correct: take first 32 bytes ONLY
-        seed = private_key[:32]
-
-        # ✅ Correct: no encoder
-        signing_key = SigningKey(seed)
-
-        # Sign the hash
+        try:
+            signing_key = SigningKey(seed)
+        except Exception as exc:
+            raise ValueError(
+                f"Ed25519 SigningKey creation failed in sign_credential_hash: "
+                f"seed_len={len(seed)} assumption={assumption} "
+                f"seed_classification={_classify_key_material(seed)} preview={_safe_hex_preview(seed)}"
+            ) from exc
         signed = signing_key.sign(cert_hash.encode())
-
-        # Return only signature (not message+signature)
         signature = base64.b64encode(signed.signature).decode()
-
         return signature
 
     finally:
+        if seed is not None:
+            del seed
         del private_key
 
 def get_issuer_address(institution_id: str | None = None) -> str:
@@ -311,12 +614,43 @@ def get_issuer_address(institution_id: str | None = None) -> str:
         Algorand base32-encoded public address string (safe to log / store).
     """
     private_key = _load_private_key(institution_id)
-    key_buf = bytearray(private_key)
+    normalized_key = None
+    sdk_private_key = None
+    key_buf = None
     try:
-        address = account.address_from_private_key(bytes(key_buf))
+        normalized_key, _, assumption = _normalize_private_key(
+            private_key,
+            context="get_issuer_address",
+        )
+        log.info(
+            "Deriving issuer address | key_type=%s key_len=%s normalized_len=%s assumption=%s normalized_preview=%s",
+            type(private_key).__name__,
+            len(private_key) if hasattr(private_key, "__len__") else "unknown",
+            len(normalized_key),
+            assumption,
+            _safe_hex_preview(normalized_key),
+        )
+        key_buf = bytearray(normalized_key)
+        sdk_private_key = _to_algosdk_private_key_string(
+            bytes(key_buf),
+            context="get_issuer_address",
+        )
+        try:
+            address = account.address_from_private_key(sdk_private_key)
+        except Exception as exc:
+            raise ValueError(
+                f"Algorand address reconstruction failed: normalized_len={len(normalized_key)} "
+                f"assumption={assumption} sdk_key_type={type(sdk_private_key).__name__} "
+                f"sdk_key_class={sdk_private_key.__class__.__name__} preview={_safe_hex_preview(normalized_key)}"
+            ) from exc
     finally:
-        for i in range(len(key_buf)):
-            key_buf[i] = 0
-        del key_buf
+        if key_buf is not None:
+            for i in range(len(key_buf)):
+                key_buf[i] = 0
+            del key_buf
+        if sdk_private_key is not None:
+            del sdk_private_key
+        if normalized_key is not None:
+            del normalized_key
         del private_key
     return address

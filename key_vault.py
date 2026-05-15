@@ -24,9 +24,33 @@ WARNING: This module is NOT suitable for production. Use HCP Vault for productio
 import os
 import base64
 import secrets as sec
+import logging
 from typing import Tuple
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+
+log = logging.getLogger(__name__)
+
+
+def _safe_preview(value: str | bytes | bytearray | None, limit: int = 8) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, str):
+        return value[: limit * 2] or "empty-str"
+    raw = bytes(value[:limit])
+    return raw.hex() if raw else "empty"
+
+
+def _logged_b64decode(value: str, *, caller: str) -> bytes:
+    log.info(
+        "Base64 decode attempt | caller=%s type=%s len=%s preview=%s",
+        caller,
+        type(value).__name__,
+        len(value) if hasattr(value, "__len__") else "unknown",
+        _safe_preview(value),
+    )
+    return base64.b64decode(value, validate=True)
 
 
 def _get_kek() -> bytes:
@@ -96,6 +120,46 @@ def encrypt_key(private_key_bytes: bytes) -> Tuple[str, str]:
     return base64.b64encode(ct).decode(), base64.b64encode(nonce).decode()
 
 
+def _looks_like_hex(text: str) -> bool:
+    if len(text) % 2 != 0:
+        return False
+    try:
+        bytes.fromhex(text)
+        return True
+    except ValueError:
+        return False
+
+
+def _decode_serialized_bytes(value: str, *, field_name: str) -> tuple[bytes, str]:
+    text = (value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} is empty")
+
+    if _looks_like_hex(text):
+        return bytes.fromhex(text), "hex"
+
+    try:
+        decoded = _logged_b64decode(text, caller=f"_decode_serialized_bytes.{field_name}")
+        return decoded, "base64"
+    except Exception:
+        pass
+
+    padded = text + ("=" * (-len(text) % 4))
+    try:
+        log.info(
+            "Base64 decode attempt | caller=%s type=%s len=%s preview=%s padding_added=%s",
+            f"_decode_serialized_bytes.{field_name}.padded",
+            type(padded).__name__,
+            len(padded),
+            _safe_preview(padded),
+            len(padded) - len(text),
+        )
+        decoded = base64.b64decode(padded)
+        return decoded, "base64-padded"
+    except Exception as exc:
+        raise ValueError(f"{field_name} is neither valid hex nor base64") from exc
+
+
 def decrypt_key(ct_b64: str, nonce_b64: str) -> bytes:
     """
     Decrypt a private key previously encrypted by encrypt_key().
@@ -116,6 +180,17 @@ def decrypt_key(ct_b64: str, nonce_b64: str) -> bytes:
         Key lifetime MUST be limited to a single signing call.
     """
     kek   = _get_kek()
-    ct    = base64.b64decode(ct_b64)
-    nonce = base64.b64decode(nonce_b64)
+    ct, ct_encoding = _decode_serialized_bytes(ct_b64, field_name="ciphertext")
+    nonce, nonce_encoding = _decode_serialized_bytes(nonce_b64, field_name="nonce")
+    log.info(
+        "Decrypting stored key | ciphertext_len=%s nonce_len=%s ciphertext_encoding=%s nonce_encoding=%s decoded_ciphertext_len=%s decoded_nonce_len=%s ciphertext_preview=%s nonce_preview=%s",
+        len(ct_b64) if ct_b64 is not None else 0,
+        len(nonce_b64) if nonce_b64 is not None else 0,
+        ct_encoding,
+        nonce_encoding,
+        len(ct),
+        len(nonce),
+        ct[:8].hex() if ct else "empty",
+        nonce[:8].hex() if nonce else "empty",
+    )
     return AESGCM(kek).decrypt(nonce, ct, None)

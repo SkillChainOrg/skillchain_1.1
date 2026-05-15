@@ -93,6 +93,8 @@ VERIFY_RESPONSE=$(curl -s -X POST "$BASE/verify" \
 
 echo "$VERIFY_RESPONSE" | jq
 
+
+
 # ---------- 5. Negative Test ----------
 print_step "5. Negative Test (Tampered Image)"
 
@@ -103,6 +105,72 @@ TAMPER_RESPONSE=$(curl -s -X POST "$BASE/verify" \
   -F "certificate=@tampered.jpg")
 
 echo "$TAMPER_RESPONSE" | jq
+
+# ---------- 6. x402 Acquisition Challenge ----------
+print_step "6. x402 Acquisition Challenge"
+
+X402_CHALLENGE_RESPONSE=$(curl -s -i -X POST "$BASE/acquire-artwork" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "artwork_id": "art_001"
+  }')
+
+echo "$X402_CHALLENGE_RESPONSE"
+
+STATUS_CODE=$(echo "$X402_CHALLENGE_RESPONSE" | head -n 1 | awk '{print $2}')
+
+if [ "$STATUS_CODE" != "402" ]; then
+  echo "❌ Expected HTTP 402 Payment Required"
+  exit 1
+fi
+
+echo "✅ x402 challenge returned successfully"
+
+# ---------- 7. x402 Payment + Ownership Transfer ----------
+print_step "7. x402 Payment + Ownership Transfer"
+
+COLLECTOR_WALLET="ALGORAND_TEST_WALLET_001"
+
+X402_PAYMENT_RESPONSE=$(curl -s -X POST "$BASE/acquire-artwork" \
+  -H "Content-Type: application/json" \
+  -H "X-X402-Payment: paid-demo-proof" \
+  -H "X-X402-Wallet: $COLLECTOR_WALLET" \
+  -d '{
+    "artwork_id": "art_001"
+  }')
+
+echo "$X402_PAYMENT_RESPONSE" | jq
+
+ACQUISITION_STATUS=$(echo "$X402_PAYMENT_RESPONSE" | jq -r '.status')
+NEW_OWNER=$(echo "$X402_PAYMENT_RESPONSE" | jq -r '.owner')
+
+fail_if_empty "$ACQUISITION_STATUS" "x402 acquisition failed"
+fail_if_empty "$NEW_OWNER" "Ownership transfer failed"
+
+echo "✅ Ownership transferred to: $NEW_OWNER"
+
+# ---------- 8. Verify Persistent Provenance ----------
+print_step "8. Verify Persistent Provenance"
+
+PROVENANCE_RESPONSE=$(curl -s "$BASE/artwork/art_001")
+
+echo "$PROVENANCE_RESPONSE" | jq
+
+CURRENT_OWNER=$(echo "$PROVENANCE_RESPONSE" | jq -r '.current_owner')
+
+if [ "$CURRENT_OWNER" != "$COLLECTOR_WALLET" ]; then
+  echo "❌ Current owner mismatch"
+  exit 1
+fi
+
+PROVENANCE_COUNT=$(echo "$PROVENANCE_RESPONSE" | jq '.provenance_history | length')
+
+if [ "$PROVENANCE_COUNT" -lt 1 ]; then
+  echo "❌ Provenance history missing"
+  exit 1
+fi
+
+echo "✅ Provenance persisted successfully"
 
 # ---------- Done ----------
 print_step "TEST COMPLETE"

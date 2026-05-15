@@ -68,7 +68,13 @@ from identity_service import bind_identity, lookup_identity
 from queue_service import queue_batch, get_batch_status
 from ipfs_service import pin_with_retry
 import db_migrations
-from db import get_db_connection, dict_cursor
+from db import (
+    dict_cursor,
+    get_db_connection,
+    get_sqlalchemy_database_uri,
+    is_production_deployment,
+    using_sqlite_fallback,
+)
 from models import db, Artwork, ProvenanceEvent
 from services.payment_service import create_acquisition_order, record_successful_acquisition
 from x402_service import create_payment_requirements, verify_x402_payment
@@ -78,11 +84,19 @@ log = logging.getLogger(__name__)
 
 # ── App + rate limiter ────────────────────────────────────────────────────────
 app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL")
+app.config["SQLALCHEMY_DATABASE_URI"] = get_sqlalchemy_database_uri()
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 frontend_url=os.getenv("FRONTEND_URL",
                     "https://frontend-6g47ukzox-anushaa-ms-projects.vercel.app")
 db.init_app(app)
+
+if using_sqlite_fallback():
+    log.warning(
+        "Flask app configured with SQLite development fallback: %s",
+        app.config["SQLALCHEMY_DATABASE_URI"],
+    )
+else:
+    log.info("Flask app configured with Postgres database.")
 
 CORS(
     app,
@@ -311,12 +325,32 @@ if not ADMIN_KEY:
     )
 
 # ── Startup ───────────────────────────────────────────────────────────────────
-db_migrations.run_migrations()
-init_db()
-init_did_db()
-with app.app_context():
-    db.create_all()
-    _seed_x402_artwork()
+def _run_startup_step(step_name: str, fn) -> None:
+    try:
+        fn()
+    except Exception as exc:
+        if is_production_deployment():
+            log.exception("%s failed during startup.", step_name)
+            raise
+        log.exception(
+            "%s failed during startup; continuing in development mode. Reason: %s",
+            step_name,
+            exc,
+        )
+
+
+_run_startup_step("db_migrations.run_migrations()", db_migrations.run_migrations)
+_run_startup_step("init_db()", init_db)
+_run_startup_step("init_did_db()", init_did_db)
+
+
+def _init_sqlalchemy_models() -> None:
+    with app.app_context():
+        db.create_all()
+        _seed_x402_artwork()
+
+
+_run_startup_step("db.create_all() / _seed_x402_artwork()", _init_sqlalchemy_models)
 
 
 # ── Image normalisation helper ────────────────────────────────────────────────
@@ -993,6 +1027,104 @@ def _derive_artisan_id(name: str) -> str:
     return f"artisan/{suffix}"
 
 
+def _demo_mode_enabled() -> bool:
+    return os.getenv("DEMO_MODE", "false").lower() == "true"
+
+
+def _get_demo_treasury_private_key() -> str:
+    phrase = os.getenv("MNEMONIC")
+    if not phrase:
+        raise RuntimeError(
+            "DEMO_MODE requires the existing MNEMONIC env var for treasury funding."
+        )
+    from algosdk import mnemonic as _mn
+    return _mn.to_private_key(phrase)
+
+
+def _wallet_balance_microalgos(address: str) -> int:
+    client = get_algod_client()
+    info = client.account_info(address)
+    return int(info.get("amount", 0))
+
+
+def _build_artisan_signing_key(artisan_id: str, *, reuse_identity: bool):
+    from nacl.encoding import RawEncoder as _Raw
+    from nacl.signing import SigningKey as _NaClSK
+
+    if reuse_identity and _demo_mode_enabled():
+        phrase = os.getenv("MNEMONIC")
+        if not phrase:
+            raise RuntimeError(
+                "DEMO_MODE reusable artisan identities require the existing MNEMONIC env var."
+            )
+        deterministic_seed = hashlib.sha256(
+            f"skillchain:demo-artisan:{artisan_id}:{phrase}".encode()
+        ).digest()
+        log.info(
+            "Using deterministic DEMO_MODE artisan identity for %s",
+            artisan_id,
+        )
+        return _NaClSK(deterministic_seed, encoder=_Raw)
+
+    return _NaClSK.generate()
+
+
+def _fund_demo_artisan_wallet_if_needed(
+    recipient_wallet: str,
+    *,
+    minimum_balance_microalgos: int = 500_000,
+) -> tuple[str | None, int, int]:
+    """
+    In DEMO_MODE, bootstrap an artisan wallet from the existing treasury mnemonic.
+
+    Returns:
+        (funding_tx_id, funded_amount, current_balance)
+    """
+    client = get_algod_client()
+    current_balance = _wallet_balance_microalgos(recipient_wallet)
+    if current_balance >= minimum_balance_microalgos:
+        log.info(
+            "Skipping DEMO_MODE artisan funding; wallet already funded | recipient=%s balance=%s threshold=%s",
+            recipient_wallet,
+            current_balance,
+            minimum_balance_microalgos,
+        )
+        return None, 0, current_balance
+
+    treasury_private_key = _get_demo_treasury_private_key()
+    from algosdk import account as _account
+
+    sender_wallet = _account.address_from_private_key(treasury_private_key)
+    treasury_balance = _wallet_balance_microalgos(sender_wallet)
+    funded_amount = minimum_balance_microalgos - current_balance
+    required_balance = funded_amount + 200_000
+    if treasury_balance < required_balance:
+        raise RuntimeError(
+            f"DEMO treasury balance too low: {treasury_balance} microAlgos; "
+            f"need at least {required_balance} to fund {recipient_wallet}."
+        )
+
+    params = client.suggested_params()
+    fund_txn = algo_txn_mod.PaymentTxn(
+        sender=sender_wallet,
+        sp=params,
+        receiver=recipient_wallet,
+        amt=funded_amount,
+        note=b"skillchain:demo-artisan-bootstrap",
+    )
+    signed_txn = fund_txn.sign(treasury_private_key)
+    tx_id = client.send_transaction(signed_txn)
+    wait_for_confirmation(client, tx_id, 4)
+    log.info(
+        "DEMO_MODE artisan wallet funded | tx_id=%s amount_microalgos=%s sender=%s recipient=%s",
+        tx_id,
+        funded_amount,
+        sender_wallet,
+        recipient_wallet,
+    )
+    return tx_id, funded_amount, current_balance + funded_amount
+
+
 @app.route("/register-artisan", methods=["POST"])
 @limiter.limit("20 per minute")
 def register_artisan():
@@ -1111,6 +1243,13 @@ def admin_approve_artisan(artisan_db_id: int):
         if request.headers.get("X-Admin-Key") != ADMIN_KEY:
             return jsonify({"error": "Unauthorized"}), 403
 
+        payload = request.get_json(silent=True) or {}
+        reuse_identity = payload.get("reuse_identity")
+        if reuse_identity is None:
+            reuse_identity = _demo_mode_enabled()
+        else:
+            reuse_identity = bool(reuse_identity)
+
         # Fetch pending artisan
         conn = get_db_connection()
         cur  = dict_cursor(conn)
@@ -1132,12 +1271,14 @@ def admin_approve_artisan(artisan_db_id: int):
         artisan_name = artisan["name"]
 
         # ── Generate Ed25519 keypair + Algorand address ───────────────────
-        from nacl.signing import SigningKey as _NaClSK
         from nacl.encoding import RawEncoder as _Raw
         from algosdk import encoding as _ae
         import base64 as _b64
 
-        signing_key      = _NaClSK.generate()
+        signing_key      = _build_artisan_signing_key(
+            artisan_id,
+            reuse_identity=reuse_identity,
+        )
         seed_bytes       = signing_key.encode(encoder=_Raw)              # 32 bytes
         pub_bytes        = signing_key.verify_key.encode(encoder=_Raw)   # 32 bytes
         private_key_bytes = seed_bytes + pub_bytes                        # 64 bytes
@@ -1167,6 +1308,25 @@ def admin_approve_artisan(artisan_db_id: int):
             del seed_bytes
             del pub_bytes
             del signing_key
+
+        funding_tx_id = None
+        funding_amount_microalgos = 0
+        funding_status = "not_requested"
+        if _demo_mode_enabled():
+            funding_status = "already_funded"
+            funding_tx_id, funding_amount_microalgos, _ = _fund_demo_artisan_wallet_if_needed(
+                algorand_wallet,
+            )
+            if funding_tx_id:
+                funding_status = "funded"
+            log.info(
+                "DEMO_MODE artisan bootstrap complete | artisan_id=%s wallet=%s funding_status=%s funding_tx_id=%s funded_amount=%s",
+                artisan_id,
+                algorand_wallet,
+                funding_status,
+                funding_tx_id,
+                funding_amount_microalgos,
+            )
 
         approved_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         approved_by = request.headers.get("X-Approved-By", "admin")
@@ -1210,9 +1370,13 @@ def admin_approve_artisan(artisan_db_id: int):
             "did":            artisan_did,
             "algorand_wallet": algorand_wallet,
             "ed25519_pubkey": ed25519_pubkey,
+            "reuse_identity": reuse_identity,
             "status":         "approved",
             "approved_by":    approved_by,
             "approved_at":    approved_at,
+            "funding_tx_id":  funding_tx_id,
+            "funding_status": funding_status,
+            "funded_amount_microalgos": funding_amount_microalgos,
             "vault_path":     f"secret/skillchain/{artisan_id}",
             "message":        "Artisan identity created. Keys stored in Vault (or AES-GCM fallback).",
         })
