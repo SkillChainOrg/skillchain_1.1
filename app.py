@@ -1406,6 +1406,38 @@ def admin_approve_artisan(artisan_db_id: int):
                 ),
             )
             conn.commit()
+            # ── Register DID document for resolver ───────────────────────────
+
+            cur.execute(
+                """
+                INSERT INTO did_registry (
+                    did,
+                    institution,
+                    institution_address,
+                    address,
+                    public_key,
+                    domain,
+                    registered_at,
+                    wallet_version,
+                    revoked
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    artisan_did,
+                    artisan_name,
+                    algorand_wallet,
+                    algorand_wallet,
+                    ed25519_pubkey,
+                    "skillchain.artisan",
+                    approved_at,
+                    1,
+                    0,
+                ),
+            )
+
+            conn.commit()
+       
         finally:
             cur.close()
             conn.close()
