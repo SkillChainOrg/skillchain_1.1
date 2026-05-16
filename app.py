@@ -99,14 +99,8 @@ if using_sqlite_fallback():
 else:
     log.info("Flask app configured with Postgres database.")
 
-CORS(
-    app,
-    resources={
-        r"/*":{
-            "origins":[frontend_url]
-        }
-    }
-)
+CORS(app)
+
 
 limiter = Limiter(
     app=app,
