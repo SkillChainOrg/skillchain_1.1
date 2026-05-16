@@ -1223,6 +1223,27 @@ def register_artisan():
     except Exception as exc:
         log.error("register_artisan error: %s", exc)
         return jsonify({"error": "Artisan registration failed", "detail": str(exc)}), 500
+    
+@app.route("/debug/artisans")
+def debug_artisans():
+    conn = get_db_connection()
+    cur = dict_cursor(conn)
+
+    try:
+        cur.execute("""
+            SELECT id, artisan_id, name, status, did, created_at
+            FROM artisans
+            ORDER BY created_at DESC
+            LIMIT 20
+        """)
+
+        rows = [dict(r) for r in cur.fetchall()]
+
+        return jsonify(rows)
+
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/admin/artisans/pending", methods=["GET"])
