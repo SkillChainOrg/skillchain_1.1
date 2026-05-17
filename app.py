@@ -207,7 +207,11 @@ def acquire_artwork():
 @limiter.limit("60 per minute")
 def get_x402_artwork(artwork_id: str):
     try:
-        # TEMP DEMO MOCK
+
+        # ─────────────────────────────────────
+        # TEMP DEMO MOCKS
+        # ─────────────────────────────────────
+
         if artwork_id == "art_001":
             return jsonify({
                 "artwork": {
@@ -228,7 +232,55 @@ def get_x402_artwork(artwork_id: str):
                     }
                 ]
             }), 200
+
+        elif artwork_id == "art_002":
+            return jsonify({
+                "artwork": {
+                    "id": "art_002",
+                    "title": "Ceremonial Clay Vessel",
+                    "created_at": "2026-05-16T10:00:00Z",
+                    "artisan_did": "did:skillchain:testnet:artisan002",
+                    "description": "Traditionally crafted ceremonial vessel."
+                },
+                "current_owner": "Museum Collection",
+                "provenance_history": [
+                    {
+                        "id": "evt_002",
+                        "event_type": "CERTIFIED",
+                        "owner_wallet": "ALGO_OWNER_002",
+                        "settlement_reference": "ALGOTX456",
+                        "created_at": "2026-05-16T10:00:00Z"
+                    }
+                ]
+            }), 200
+
+        elif artwork_id == "art_003":
+            return jsonify({
+                "artwork": {
+                    "id": "art_003",
+                    "title": "Natural Indigo Fabric",
+                    "created_at": "2026-05-17T08:00:00Z",
+                    "artisan_did": "did:skillchain:testnet:artisan003",
+                    "description": "Hand-dyed indigo textile provenance record."
+                },
+                "current_owner": "Private Archive",
+                "provenance_history": [
+                    {
+                        "id": "evt_003",
+                        "event_type": "CERTIFIED",
+                        "owner_wallet": "ALGO_OWNER_003",
+                        "settlement_reference": "ALGOTX789",
+                        "created_at": "2026-05-17T08:00:00Z"
+                    }
+                ]
+            }), 200
+
+        # ─────────────────────────────────────
+        # REAL DB LOOKUP
+        # ─────────────────────────────────────
+
         artwork = db.session.get(Artwork, artwork_id)
+
         if artwork is None:
             return jsonify({"error": "Artwork not found"}), 404
 
@@ -238,6 +290,7 @@ def get_x402_artwork(artwork_id: str):
             .order_by(ProvenanceEvent.created_at.asc(), ProvenanceEvent.id.asc())
             .all()
         )
+
         return jsonify(
             {
                 "artwork": {
@@ -259,10 +312,14 @@ def get_x402_artwork(artwork_id: str):
                 ],
             }
         ), 200
+
     except Exception as exc:
         log.error("get_x402_artwork error: %s", exc)
-        return jsonify({"error": "Could not fetch artwork", "detail": str(exc)}), 500
 
+        return jsonify({
+            "error": "Could not fetch artwork",
+            "detail": str(exc)
+        }), 500
 
 @app.route("/api/payments/create-order", methods=["POST"])
 @limiter.limit("30 per minute")
