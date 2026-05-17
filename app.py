@@ -306,6 +306,7 @@ def get_artwork_verification(artwork_id):
                 SELECT
                     id,
                     artisan_did,
+                    artisan_name,
                     title,
                     description,
                     materials,
@@ -338,6 +339,7 @@ def get_artwork_verification(artwork_id):
             "description": artwork["description"],
             "materials": artwork["materials"],
             "artisan_did": artwork["artisan_did"],
+            "artisan_name": artwork["artisan_name"],
             "tx_id": artwork["tx_id"],
             "ipfs_cid": artwork["ipfs_cid"],
             "created_at": artwork["created_at"].isoformat() if artwork["created_at"] else None,
