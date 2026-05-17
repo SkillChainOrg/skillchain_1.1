@@ -1819,6 +1819,48 @@ def resolve_did_endpoint(did: str):
     except Exception as exc:
         log.error("resolve_did_endpoint error: %s", exc)
         return jsonify({"error": "DID resolution error"}), 500
+    
+@app.route("/artisan/id/<path:artisan_id>", methods=["GET"])
+def get_artisan_by_id(artisan_id: str):
+    """
+    Resolve artisan by artisan_id.
+    Used for pending → approved refresh flow.
+    """
+
+    try:
+        conn = get_db_connection()
+        cur = dict_cursor(conn)
+
+        try:
+            cur.execute(
+                """
+                SELECT id, artisan_id, did, name, craft_type,
+                       cluster, location, status,
+                       algorand_wallet, approved_at, created_at
+                FROM artisans
+                WHERE artisan_id = %s
+                LIMIT 1
+                """,
+                (artisan_id,),
+            )
+
+            artisan = cur.fetchone()
+
+        finally:
+            cur.close()
+            conn.close()
+
+        if not artisan:
+            return jsonify({"error": "Artisan not found"}), 404
+
+        return jsonify(dict(artisan))
+
+    except Exception as exc:
+        log.error("get_artisan_by_id error: %s", exc)
+
+        return jsonify({
+            "error": "Failed to fetch artisan"
+        }), 500
 
 
 @app.route("/did/view/<path:did>", methods=["GET"])
