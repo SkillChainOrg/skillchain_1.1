@@ -84,6 +84,12 @@ log = logging.getLogger(__name__)
 
 # ── App + rate limiter ────────────────────────────────────────────────────────
 app = Flask(__name__)
+@app.after_request
+def after_request(response):
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+    response.headers.add("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+    return response
 
 app.config["SQLALCHEMY_DATABASE_URI"] = get_sqlalchemy_database_uri()
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -100,7 +106,13 @@ if using_sqlite_fallback():
 else:
     log.info("Flask app configured with Postgres database.")
 
-CORS(app)
+CORS(
+    app,
+    resources={r"/*": {"origins": "*"}},
+    supports_credentials=True,
+    allow_headers=["Content-Type", "Authorization"],
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+)
 
 
 limiter = Limiter(
