@@ -340,7 +340,7 @@ def get_artwork_verification(artwork_id):
             "artisan_did": artwork["artisan_did"],
             "tx_id": artwork["tx_id"],
             "ipfs_cid": artwork["ipfs_cid"],
-            "created_at": artwork["created_at"].isoformat() if artwork["created_at"] else None,
+            "created_at": artwork["created_at"],
             "verified": True,
             "doc_type": "Registered cultural artifact",
             "trust_grade": "A",
