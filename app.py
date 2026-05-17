@@ -1429,7 +1429,7 @@ def admin_approve_artisan(artisan_db_id: int):
                     algorand_wallet,
                     algorand_wallet,
                     ed25519_pubkey,
-                    "skillchain.artisan",
+                    f"{artisan_id.replace('/', '-')}.skillchain.artisan",
                     approved_at,
                     1,
                     0,
