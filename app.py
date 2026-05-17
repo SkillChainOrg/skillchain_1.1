@@ -172,9 +172,13 @@ def _record_x402_acquisition(wallet_address: str, settlement_reference: str | No
 
 # ── Commerce (Domestic Settlement v1 — Razorpay UPI) ─────────────────────────
 
-@app.route("/acquire-artwork", methods=["POST"])
+@app.route("/acquire-artwork", methods=["POST", "OPTIONS"])
 @limiter.limit("30 per minute")
 def acquire_artwork():
+
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True}), 200
+
     try:
         payload = request.get_json(silent=True) or {}
         requested_artwork_id = payload.get("artwork_id", ARTWORK["id"])
