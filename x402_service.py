@@ -225,6 +225,7 @@ def create_payment_requirements(
         "boxes": [
             {"name": f"{config['owner_box_prefix']}{artwork_id_str}"},
             {"name": f"{config['price_box_prefix']}{artwork_id_str}"},
+            {"name": f"creator:{artwork_id_str}"},
         ],
         "artwork": {
             "id": artwork.get("id"),
