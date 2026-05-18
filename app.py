@@ -77,7 +77,11 @@ from db import (
 )
 from models import db, Artwork, ProvenanceEvent
 from services.payment_service import create_acquisition_order, record_successful_acquisition
-from x402_service import create_payment_requirements, verify_x402_payment
+from x402_service import (
+    create_payment_requirements,
+    init_x402_db,
+    verify_x402_payment,
+)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -181,41 +185,48 @@ def acquire_artwork():
 
     try:
         payload = request.get_json(silent=True) or {}
-        requested_artwork_id = payload.get("artwork_id", ARTWORK["id"])
+        artwork_id = payload.get("artwork_id")
+        collector_name = (payload.get("collector_name") or payload.get("buyer_name") or "").strip()
+        collector_email = (payload.get("collector_email") or payload.get("buyer_email") or "").strip()
+        tx_id = (payload.get("tx_id") or "").strip()
+        wallet_address = (payload.get("wallet_address") or "").strip()
+        challenge_nonce = (payload.get("challenge_nonce") or "").strip()
 
-        if requested_artwork_id != ARTWORK["id"]:
-            return jsonify(
-                {
-                    "error": "Artwork not found",
-                    "available_artwork_id": ARTWORK["id"],
-                }
-            ), 404
+        if artwork_id is None:
+            return jsonify({"error": "artwork_id is required"}), 400
+        try:
+            artwork_id = int(artwork_id)
+        except Exception:
+            return jsonify({"error": "artwork_id must be an integer"}), 400
 
-        verification = verify_x402_payment(request.headers)
-        if not verification.get("verified"):
+        if not tx_id or not wallet_address or not challenge_nonce:
             return (
                 jsonify(
                     {
                         "error": "Payment Required",
-                        "artwork": ARTWORK,
-                        "payment_requirements": create_payment_requirements(),
+                        "payment_requirements": create_payment_requirements(
+                            artwork_id=artwork_id,
+                            collector_name=collector_name,
+                            collector_email=collector_email,
+                        ),
                     }
                 ),
                 402,
             )
 
-        wallet_address = verification.get("wallet_address") or "wallet_address"
-        settlement = verification.get("settlement") or {}
-        result = _record_x402_acquisition(
-            wallet_address,
-            settlement.get("settlement_reference"),
+        verification = verify_x402_payment(
+            tx_id=tx_id,
+            wallet_address=wallet_address,
+            challenge_nonce=challenge_nonce,
         )
-        result["settlement"] = verification.get("settlement")
-        return jsonify(result), 200
+        if not verification.get("verified"):
+            return jsonify({"error": "Settlement verification failed", **verification}), 400
+
+        return jsonify(verification), 200
     except Exception as exc:
-        db.session.rollback()
         log.error("acquire_artwork error: %s", exc)
-        return jsonify({"error": "Artwork acquisition failed", "detail": str(exc)}), 500
+        status_code = 404 if isinstance(exc, KeyError) else 500
+        return jsonify({"error": "Artwork acquisition failed", "detail": str(exc)}), status_code
 
 
 @app.route("/artwork/<artwork_id>", methods=["GET"])
@@ -496,6 +507,7 @@ def _run_startup_step(step_name: str, fn) -> None:
 _run_startup_step("db_migrations.run_migrations()", db_migrations.run_migrations)
 _run_startup_step("init_db()", init_db)
 _run_startup_step("init_did_db()", init_did_db)
+_run_startup_step("init_x402_db()", init_x402_db)
 
 
 def _init_sqlalchemy_models() -> None:
@@ -552,7 +564,7 @@ def get_artwork_object(artwork_id: int):
 
             cur.execute(
                 """
-                SELECT artwork_id, acquisition_id, owner_name, owner_email, collector_reference_id, updated_at
+                SELECT artwork_id, acquisition_id, owner_name, owner_email, owner_wallet, collector_reference_id, updated_at
                 FROM artwork_ownership
                 WHERE artwork_id = %s
                 """,

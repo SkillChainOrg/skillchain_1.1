@@ -294,6 +294,11 @@ def run_migrations() -> None:
             ("razorpay_payment_id", "TEXT"),
             ("payment_status",      "TEXT"),
             ("settlement_mode",     "TEXT DEFAULT 'domestic_upi'"),
+            ("challenge_nonce",     "TEXT"),
+            ("algorand_tx_id",      "TEXT"),
+            ("algorand_group_id",   "TEXT"),
+            ("wallet_address",      "TEXT"),
+            ("algorand_app_id",     "BIGINT"),
             ("timestamp",           "TEXT"),
         ]:
             _add_column_if_missing(cur, "acquisitions", col, col_def)
@@ -355,10 +360,60 @@ def run_migrations() -> None:
             ("acquisition_id", "TEXT"),
             ("owner_name",     "TEXT"),
             ("owner_email",    "TEXT"),
+            ("owner_wallet",   "TEXT"),
             ("collector_reference_id", "TEXT"),
             ("updated_at",     "TEXT"),
         ]:
             _add_column_if_missing(cur, "artwork_ownership", col, col_def)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS x402_payment_challenges (
+                id SERIAL PRIMARY KEY,
+                nonce TEXT UNIQUE,
+                artwork_id INTEGER NOT NULL,
+                acquisition_id TEXT,
+                collector_name TEXT,
+                collector_email TEXT,
+                amount_microalgos BIGINT NOT NULL,
+                receiver TEXT NOT NULL,
+                app_id BIGINT NOT NULL,
+                network TEXT NOT NULL,
+                wallet_address TEXT,
+                tx_id TEXT,
+                group_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                expires_at TEXT NOT NULL,
+                used_at TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        for col, col_def in [
+            ("nonce", "TEXT"),
+            ("artwork_id", "INTEGER"),
+            ("acquisition_id", "TEXT"),
+            ("collector_name", "TEXT"),
+            ("collector_email", "TEXT"),
+            ("amount_microalgos", "BIGINT"),
+            ("receiver", "TEXT"),
+            ("app_id", "BIGINT"),
+            ("network", "TEXT"),
+            ("wallet_address", "TEXT"),
+            ("tx_id", "TEXT"),
+            ("group_id", "TEXT"),
+            ("status", "TEXT DEFAULT 'pending'"),
+            ("expires_at", "TEXT"),
+            ("used_at", "TEXT"),
+            ("created_at", "TEXT"),
+        ]:
+            _add_column_if_missing(cur, "x402_payment_challenges", col, col_def)
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uidx_x402_payment_challenges_nonce
+            ON x402_payment_challenges (nonce)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_x402_payment_challenges_artwork_id
+            ON x402_payment_challenges (artwork_id)
+        """)
 
         # ── collectors (minimal provenance metadata; no accounts) ────────────
         cur.execute("""

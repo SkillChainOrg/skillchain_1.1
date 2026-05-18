@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@perawallet/connect": "^1.4.2",
+    "algosdk": "^3.5.2",
     "axios": "^1.16.0",
     "framer-motion": "^12.38.0",
     "lucide-react": "^1.14.0",

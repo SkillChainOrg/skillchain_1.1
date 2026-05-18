@@ -115,10 +115,10 @@ export const VerificationPage = () => {
     {
       icon: FileCheck2,
       title: "Artifact hash matched",
-      detail: result?.verified
-        ? "The uploaded work matched its registered fingerprint."
-        : "The submitted file could not be matched to a trusted record.",
-      active: Boolean(result?.verified),
+      detail: result?.integrity_hash_match
+        ? "The uploaded bytes matched the originally certified file."
+        : "The submitted file bytes do not match the certified original.",
+      active: Boolean(result?.integrity_hash_match),
     },
     {
       icon: Fingerprint,
@@ -149,7 +149,13 @@ export const VerificationPage = () => {
   const trustPillars = [
     {
       label: "Tamper-proof integrity",
-      value: result?.hmac_valid ? "Confirmed" : result ? "Unavailable" : "Pending",
+      value: result?.integrity_hash_match
+        ? "Binary match"
+        : result?.tampered_detected
+          ? "Tampering detected"
+          : result
+            ? "Unavailable"
+            : "Pending",
     },
     {
       label: "Provenance signature",
@@ -599,20 +605,28 @@ export const VerificationPage = () => {
                             Integrity Confirmation
                           </div>
                           <div className="text-lg">
-                            {result.hmac_valid || result.signature_valid
-                              ? "Tamper-proof evidence confirmed"
-                              : "Integrity evidence unavailable"}
+                            {result.integrity_hash_match
+                              ? "Uploaded bytes match the certified original"
+                              : result.tampered_detected
+                                ? "Uploaded bytes were modified after certification"
+                                : "Integrity evidence unavailable"}
                           </div>
                         </div>
 
                         <div
                           className={`px-4 py-2 border rounded-full text-sm ${
-                            result.hmac_valid || result.signature_valid
+                            result.integrity_hash_match
                               ? "border-emerald-700/30 text-emerald-700 bg-emerald-700/5"
+                              : result.tampered_detected
+                                ? "border-red-700/30 text-red-700 bg-red-700/5"
                               : "border-[#c9b594] text-[#7a6557] bg-[#f5ebdd]"
                           }`}
                         >
-                          {result.hmac_valid || result.signature_valid ? "Confirmed" : "Pending"}
+                          {result.integrity_hash_match
+                            ? "Confirmed"
+                            : result.tampered_detected
+                              ? "Failed"
+                              : "Pending"}
                         </div>
                       </div>
                     </div>
