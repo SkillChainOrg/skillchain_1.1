@@ -211,7 +211,7 @@ def create_payment_requirements(
         cur.close()
         conn.close()
 
-    artwork_id_str = str(artwork_id)
+    artwork_id_str = f"art_{int(artwork_id):03d}"
     return {
         "amount": amount,
         "asset": "ALGO",
