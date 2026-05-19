@@ -5,8 +5,6 @@ import os
 import secrets
 import time
 from typing import Any
-import struct
-
 from algosdk import abi, encoding
 
 from algorand_service import get_algod_client, get_indexer_client
@@ -33,6 +31,17 @@ def _required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"{name} is required for x402 settlement")
     return value
+
+
+def _canonical_artwork_id(artwork_id: int | str) -> str:
+    value = str(artwork_id).strip()
+    if value.startswith("art_"):
+        return value
+    return f"art_{int(value):03d}"
+
+
+def _box_name(prefix: str, artwork_id: int | str) -> bytes:
+    return f"{prefix}{_canonical_artwork_id(artwork_id)}".encode("utf-8")
 
 
 def _get_marketplace_config() -> dict[str, Any]:
@@ -212,8 +221,7 @@ def create_payment_requirements(
         cur.close()
         conn.close()
 
-    raw_artwork_id = f"art_{int(artwork_id):03d}"
-    arc4_artwork_id = b"\x00" + bytes([len(raw_artwork_id)]) + raw_artwork_id.encode()
+    raw_artwork_id = _canonical_artwork_id(artwork_id)
     return {
         "amount": amount,
         "asset": "ALGO",
@@ -226,25 +234,16 @@ def create_payment_requirements(
         "method": ACQUIRE_SIGNATURE,
         "boxes": [
             {
-                "name": base64.b64encode(
-                    config["owner_box_prefix"].encode() + arc4_artwork_id
-                ).decode(),
-                "encoding": "base64",
+                "name": f"{config['owner_box_prefix']}{raw_artwork_id}",
             },
             {
-                "name": base64.b64encode(
-                    config["price_box_prefix"].encode() + arc4_artwork_id
-                ).decode(),
-                "encoding": "base64",
+                "name": f"{config['price_box_prefix']}{raw_artwork_id}",
             },
             {
-                "name": base64.b64encode(
-                    b"creator:" + arc4_artwork_id
-                ).decode(),
-                "encoding": "base64",
+                "name": f"creator:{raw_artwork_id}",
             },
         ],
-        "artwork": {
+                "artwork": {
             "id": artwork.get("id"),
             "title": artwork.get("title"),
             "artisan_did": artwork.get("artisan_did"),
@@ -316,9 +315,9 @@ def _find_matching_payment(
     return None
 
 
-def _read_owner_from_box(*, app_id: int, artwork_id: int) -> str:
+def _read_owner_from_box(*, app_id: int, artwork_id: int | str) -> str:
     client = get_algod_client()
-    box_name = f"{OWNER_BOX_PREFIX}{artwork_id}".encode("utf-8")
+    box_name = _box_name(OWNER_BOX_PREFIX, artwork_id)
     box = client.application_box_by_name(app_id, box_name)
     raw_value = box.get("value", "")
     value_bytes = _decode_b64(raw_value)
@@ -510,7 +509,7 @@ def verify_x402_payment(
         return {"verified": False, "reason": "unexpected_method_selector"}
 
     submitted_artwork_id = _decode_artwork_arg(app_args[1])
-    if submitted_artwork_id != str(challenge["artwork_id"]):
+    if submitted_artwork_id != _canonical_artwork_id(challenge["artwork_id"]):
         return {"verified": False, "reason": "artwork_id_mismatch"}
 
     group_id = app_txn.get("group")
@@ -530,7 +529,7 @@ def verify_x402_payment(
     try:
         current_owner = _read_owner_from_box(
             app_id=int(challenge["app_id"]),
-            artwork_id=int(challenge["artwork_id"]),
+            artwork_id=challenge["artwork_id"],
         )
     except Exception:
         return {"verified": False, "reason": "owner_box_lookup_failed"}
