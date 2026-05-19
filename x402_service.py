@@ -5,6 +5,7 @@ import os
 import secrets
 import time
 from typing import Any
+import struct
 
 from algosdk import abi, encoding
 
@@ -211,7 +212,8 @@ def create_payment_requirements(
         cur.close()
         conn.close()
 
-    artwork_id_str = f"art_{int(artwork_id):03d}"
+    raw_artwork_id = f"art_{int(artwork_id):03d}"
+    arc4_artwork_id = b"\x00" + bytes([len(raw_artwork_id)]) + raw_artwork_id.encode()
     return {
         "amount": amount,
         "asset": "ALGO",
@@ -219,13 +221,28 @@ def create_payment_requirements(
         "app_id": config["app_id"],
         "receiver": config["receiver"],
         "challenge_nonce": nonce,
-        "artwork_id": artwork_id_str,
+        "artwork_id": raw_artwork_id,
         "expires_at": expires_at,
         "method": ACQUIRE_SIGNATURE,
         "boxes": [
-            {"name": f"{config['owner_box_prefix']}{artwork_id_str}"},
-            {"name": f"{config['price_box_prefix']}{artwork_id_str}"},
-            {"name": f"creator:{artwork_id_str}"},
+            {
+                "name": base64.b64encode(
+                    config["owner_box_prefix"].encode() + arc4_artwork_id
+                ).decode(),
+                "encoding": "base64",
+            },
+            {
+                "name": base64.b64encode(
+                    config["price_box_prefix"].encode() + arc4_artwork_id
+                ).decode(),
+                "encoding": "base64",
+            },
+            {
+                "name": base64.b64encode(
+                    b"creator:" + arc4_artwork_id
+                ).decode(),
+                "encoding": "base64",
+            },
         ],
         "artwork": {
             "id": artwork.get("id"),
