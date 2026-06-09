@@ -212,6 +212,13 @@ def run_migrations() -> None:
             ("approved_by",       "TEXT"),
             ("approved_at",       "TEXT"),
             ("created_at",        "TEXT"),
+            # Supabase auth linkage. Authentication (Google OAuth + phone) happens
+            # in the frontend via Supabase; the backend verifies the Supabase JWT
+            # and links the user to this row via supabase_id (the JWT `sub` claim).
+            ("supabase_id",       "TEXT"),
+            ("email",             "TEXT"),
+            ("last_login",        "TEXT"),
+            ("profile_completed", "BOOLEAN DEFAULT FALSE"),
         ]:
             _add_column_if_missing(cur, "artisans", col, col_def)
 
@@ -249,6 +256,15 @@ def run_migrations() -> None:
         cur.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS uidx_artisans_artisan_id
             ON artisans (artisan_id)
+        """)
+
+        # Supabase user id is the lookup key used by the JWT auth layer
+        # (auth_supabase.load_artisan_by_supabase_id). Unique so one Supabase
+        # account maps to exactly one artisan profile.
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uidx_artisans_supabase_id
+            ON artisans (supabase_id)
+            WHERE supabase_id IS NOT NULL
         """)
 
         cur.execute("""

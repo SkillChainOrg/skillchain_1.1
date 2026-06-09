@@ -35,7 +35,7 @@ import time
 import zipfile
 import json as _json
 
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, g
 try:
     from flask_cors import CORS
 except ImportError:
@@ -76,6 +76,7 @@ from db import (
     using_sqlite_fallback,
 )
 from models import db, Artwork, ProvenanceEvent
+from auth_supabase import require_supabase_auth, require_artisan_auth
 from services.payment_service import create_acquisition_order, record_successful_acquisition
 from x402_service import (
     create_payment_requirements,
@@ -1223,6 +1224,45 @@ def admin_revoke_issuer(institution_id):
         return jsonify({"error": "Revocation failed", "detail": str(exc)}), 500
 
 
+# ── Authenticated artisan identity (Supabase JWT) ────────────────────────────
+
+@app.route("/auth/me", methods=["GET", "OPTIONS"])
+@require_supabase_auth
+def auth_me():
+    """
+    Return the authenticated user's identity, derived from a verified Supabase JWT.
+
+    Auth: send the Supabase access token as ``Authorization: Bearer <token>``.
+      - 401 if the token is missing/invalid/expired.
+      - 200 with ``artisan: null`` if authenticated but not yet onboarded.
+      - 200 with the artisan profile if a profile is linked to this account.
+
+    No wallet, key, or Vault logic runs here — this only reports identity.
+    """
+    claims = g.supabase_claims
+    return jsonify({
+        "authenticated": True,
+        "supabase_id": g.supabase_id,
+        "email": claims.get("email"),
+        "phone": claims.get("phone"),
+        "artisan": g.artisan,            # None until the artisan registers
+        "has_profile": g.artisan is not None,
+    })
+
+
+@app.route("/artisan/me", methods=["GET", "OPTIONS"])
+@require_artisan_auth
+def artisan_me():
+    """
+    Return the linked artisan profile for the authenticated Supabase user.
+
+    Stricter than /auth/me: requires an existing profile.
+      - 401 if the token is missing/invalid/expired.
+      - 404 if authenticated but no artisan profile exists yet.
+    """
+    return jsonify({"success": True, "artisan": g.artisan})
+
+
 # ── Artisan-first routes ────────────────────────────────────────────────
 
 def _derive_artisan_id(name: str) -> str:
@@ -1346,6 +1386,8 @@ def register_artisan():
     """
     try:
         data = request.get_json() or {}
+        email = (data.get("email") or "").strip()
+        supabase_id = (data.get("supabase_id") or "").strip()
         name = (data.get("name") or "").strip()
         if not name:
             return jsonify({"error": "name is required"}), 400
@@ -1353,53 +1395,116 @@ def register_artisan():
         craft_type = (data.get("craft_type") or "").strip()
         cluster    = (data.get("cluster")    or "").strip()
         location   = (data.get("location")   or "").strip()
-
         artisan_id = _derive_artisan_id(name)
         created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
+        email = (data.get("email") or "").strip()
+        supabase_id = (data.get("supabase_id") or "").strip()
+
+        if not supabase_id:
+            return jsonify({"error": "supabase_id is required"}), 400
+
         conn = get_db_connection()
-        cur  = conn.cursor()
+        cur  = dict_cursor(conn)
+
         try:
+
+            # Restore existing artisan if already linked
             cur.execute(
                 """
-                INSERT INTO artisans
-                    (artisan_id, name, craft_type, cluster, location, status, created_at)
-                VALUES (%s, %s, %s, %s, %s, 'pending', %s)
+                SELECT id, artisan_id, status, did
+                FROM artisans
+                WHERE supabase_id = %s
+                """,
+                (supabase_id,)
+            )
+
+            existing = cur.fetchone()
+
+            if existing:
+                return jsonify({
+                    "success": True,
+                    "existing": True,
+                    "id": existing["id"],
+                    "artisan_id": existing["artisan_id"],
+                    "status": existing["status"],
+                    "did": existing["did"],
+                    "message": "Existing artisan restored"
+                }), 200
+
+            # Create new artisan
+            cur.execute(
+                """
+                INSERT INTO artisans (
+                    artisan_id,
+                    name,
+                    craft_type,
+                    cluster,
+                    location,
+                    email,
+                    supabase_id,
+                    last_login,
+                    profile_completed,
+                    status,
+                    created_at
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    'pending', %s
+                )
                 ON CONFLICT (artisan_id) DO NOTHING
                 """,
-                (artisan_id, name, craft_type, cluster, location, created_at),
+                (
+                    artisan_id,
+                    name,
+                    craft_type,
+                    cluster,
+                    location,
+                    email,
+                    supabase_id,
+                    created_at,
+                    True,
+                    created_at,
+                ),
             )
+
             conn.commit()
             inserted = cur.rowcount
+
+            if inserted == 0:
+                return jsonify({
+                    "error": "An artisan with this name already exists"
+                }), 409
+
+            # Fetch created artisan
+            cur.execute(
+                """
+                SELECT id, artisan_id, status
+                FROM artisans
+                WHERE artisan_id = %s
+                """,
+                (artisan_id,),
+            )
+
+            row = cur.fetchone()
+
         finally:
             cur.close()
             conn.close()
 
-        if inserted == 0:
-            return jsonify({"error": "An artisan with this name already exists"}), 409
-
-        # Fetch the assigned DB id
-        conn2 = get_db_connection()
-        cur2  = dict_cursor(conn2)
-        try:
-            cur2.execute(
-                "SELECT id FROM artisans WHERE artisan_id = %s",
-                (artisan_id,),
-            )
-            row = cur2.fetchone()
-        finally:
-            cur2.close()
-            conn2.close()
-
         return jsonify({
-            "success":    True,
-            "id":         row["id"] if row else None,
+            "success": True,
+            "id": row["id"] if row else None,
             "artisan_id": artisan_id,
-            "name":       name,
-            "status":     "pending",
+            "name": name,
+            "email": email,
+            "supabase_id": supabase_id,
+            "status": "pending",
             "created_at": created_at,
-            "message":    "Artisan registered. Awaiting admin approval before identity is created.",
+            "message": "Artisan registered. Awaiting admin approval before identity is created.",
         }), 201
+
 
     except Exception as exc:
         log.error("register_artisan error: %s", exc)
