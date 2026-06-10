@@ -48,7 +48,7 @@ import os
 from functools import wraps
 
 import jwt
-from flask import g, jsonify, request
+from flask import current_app, g, jsonify, request
 
 from db import dict_cursor, get_db_connection
 
@@ -262,7 +262,7 @@ def require_supabase_auth(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         if request.method == "OPTIONS":
-            return fn(*args, **kwargs)
+            return current_app.make_default_options_response()
 
         token = _extract_bearer_token()
         if not token:
@@ -301,7 +301,7 @@ def require_artisan_auth(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         if request.method == "OPTIONS":
-            return fn(*args, **kwargs)
+            return current_app.make_default_options_response()
 
         token = _extract_bearer_token()
         if not token:
