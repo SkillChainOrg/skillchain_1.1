@@ -219,6 +219,9 @@ def run_migrations() -> None:
             ("email",             "TEXT"),
             ("last_login",        "TEXT"),
             ("profile_completed", "BOOLEAN DEFAULT FALSE"),
+            ("bio",                 "TEXT"),
+            ("years_of_experience", "INTEGER"),
+            ("profile_image",       "TEXT"),
         ]:
             _add_column_if_missing(cur, "artisans", col, col_def)
 

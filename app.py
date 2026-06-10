@@ -1377,6 +1377,7 @@ def _fund_demo_artisan_wallet_if_needed(
 
 
 @app.route("/register-artisan", methods=["POST"])
+@require_supabase_auth
 @limiter.limit("20 per minute")
 def register_artisan():
     """
@@ -1386,8 +1387,9 @@ def register_artisan():
     """
     try:
         data = request.get_json() or {}
-        email = (data.get("email") or "").strip()
-        supabase_id = (data.get("supabase_id") or "").strip()
+        supabase_id = g.supabase_id
+        claims = g.supabase_claims or {}
+        email = (claims.get("email") or data.get("email") or "").strip()
         name = (data.get("name") or "").strip()
         if not name:
             return jsonify({"error": "name is required"}), 400
@@ -1395,14 +1397,21 @@ def register_artisan():
         craft_type = (data.get("craft_type") or "").strip()
         cluster    = (data.get("cluster")    or "").strip()
         location   = (data.get("location")   or "").strip()
+        bio        = (data.get("bio")        or "").strip()
+        profile_image = (data.get("profile_image") or "").strip() or None
+
+        years_raw = data.get("years_of_experience")
+        years_of_experience = None
+        if years_raw is not None and str(years_raw).strip() != "":
+            try:
+                years_of_experience = int(years_raw)
+                if years_of_experience < 0:
+                    return jsonify({"error": "years_of_experience must be non-negative"}), 400
+            except (TypeError, ValueError):
+                return jsonify({"error": "years_of_experience must be a number"}), 400
+
         artisan_id = _derive_artisan_id(name)
         created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-        email = (data.get("email") or "").strip()
-        supabase_id = (data.get("supabase_id") or "").strip()
-
-        if not supabase_id:
-            return jsonify({"error": "supabase_id is required"}), 400
 
         conn = get_db_connection()
         cur  = dict_cursor(conn)
@@ -1441,6 +1450,9 @@ def register_artisan():
                     craft_type,
                     cluster,
                     location,
+                    bio,
+                    years_of_experience,
+                    profile_image,
                     email,
                     supabase_id,
                     last_login,
@@ -1450,6 +1462,7 @@ def register_artisan():
                 )
                 VALUES (
                     %s, %s, %s, %s, %s,
+                    %s, %s, %s,
                     %s, %s, %s, %s,
                     'pending', %s
                 )
@@ -1461,6 +1474,9 @@ def register_artisan():
                     craft_type,
                     cluster,
                     location,
+                    bio,
+                    years_of_experience,
+                    profile_image,
                     email,
                     supabase_id,
                     created_at,
