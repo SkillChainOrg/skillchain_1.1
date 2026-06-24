@@ -1226,6 +1226,54 @@ def admin_revoke_issuer(institution_id):
 
 # ── Authenticated artisan identity (Supabase JWT) ────────────────────────────
 
+def _enrich_artisan_for_dashboard(artisan: dict) -> dict:
+    """Attach profile fields and artworks for the private artisan dashboard."""
+    if not artisan:
+        return artisan
+
+    enriched = dict(artisan)
+    conn = get_db_connection()
+    cur = dict_cursor(conn)
+    try:
+        cur.execute(
+            """
+            SELECT bio, years_of_experience, profile_image
+            FROM artisans
+            WHERE id = %s
+            """,
+            (artisan["id"],),
+        )
+        extra = cur.fetchone()
+        if extra:
+            enriched.update(dict(extra))
+
+        did = artisan.get("did")
+        if did:
+            cur.execute(
+                """
+                SELECT id, title, description, materials, cert_hash,
+                       ipfs_cid, tx_id, status, created_at
+                FROM artworks
+                WHERE artisan_did = %s
+                ORDER BY created_at DESC
+                """,
+                (did,),
+            )
+            artworks = []
+            for row in cur.fetchall():
+                art = dict(row)
+                art["artwork_id"] = art.pop("id")
+                artworks.append(art)
+            enriched["artworks"] = artworks
+        else:
+            enriched["artworks"] = []
+    finally:
+        cur.close()
+        conn.close()
+
+    return enriched
+
+
 @app.route("/auth/me", methods=["GET", "OPTIONS"])
 @require_supabase_auth
 def auth_me():
@@ -1240,14 +1288,77 @@ def auth_me():
     No wallet, key, or Vault logic runs here — this only reports identity.
     """
     claims = g.supabase_claims
+    artisan = _enrich_artisan_for_dashboard(g.artisan) if g.artisan else None
     return jsonify({
         "authenticated": True,
         "supabase_id": g.supabase_id,
         "email": claims.get("email"),
         "phone": claims.get("phone"),
-        "artisan": g.artisan,            # None until the artisan registers
-        "has_profile": g.artisan is not None,
+        "artisan": artisan,
+        "has_profile": artisan is not None,
     })
+
+
+@app.route("/artisan/me/profile", methods=["PATCH"])
+@require_artisan_auth
+def update_artisan_profile():
+    """Update editable profile fields for the authenticated artisan."""
+    try:
+        data = request.get_json() or {}
+        bio = data.get("bio")
+        location = data.get("location")
+        profile_image = data.get("profile_image")
+
+        updates = []
+        params = []
+
+        if bio is not None:
+            updates.append("bio = %s")
+            params.append(str(bio).strip())
+        if location is not None:
+            updates.append("location = %s")
+            params.append(str(location).strip())
+        if profile_image is not None:
+            image = str(profile_image).strip() or None
+            updates.append("profile_image = %s")
+            params.append(image)
+
+        if not updates:
+            return jsonify({"error": "No updatable fields provided"}), 400
+
+        params.append(g.supabase_id)
+        conn = get_db_connection()
+        cur = dict_cursor(conn)
+        try:
+            cur.execute(
+                f"UPDATE artisans SET {', '.join(updates)} WHERE supabase_id = %s",
+                tuple(params),
+            )
+            conn.commit()
+            cur.execute(
+                """
+                SELECT id, artisan_id, did, name, craft_type, cluster, location,
+                       algorand_wallet, ed25519_pubkey, status, supabase_id, email,
+                       profile_completed, approved_at, created_at
+                FROM artisans
+                WHERE supabase_id = %s
+                """,
+                (g.supabase_id,),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
+
+        if not row:
+            return jsonify({"error": "Artisan not found"}), 404
+
+        artisan = _enrich_artisan_for_dashboard(dict(row))
+        return jsonify({"success": True, "artisan": artisan})
+
+    except Exception as exc:
+        log.error("update_artisan_profile error: %s", exc)
+        return jsonify({"error": "Profile update failed", "detail": str(exc)}), 500
 
 
 @app.route("/artisan/me", methods=["GET", "OPTIONS"])
