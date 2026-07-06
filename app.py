@@ -82,6 +82,7 @@ from x402_service import (
     create_payment_requirements,
     init_x402_db,
     verify_x402_payment,
+    _get_artwork_row,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -1073,29 +1074,104 @@ def verify():
 @app.route("/artwork/<int:artwork_id>", methods=["GET"])
 def get_artwork(artwork_id):
     try:
-        artwork = Artwork.query.get(artwork_id)
+        # #region agent log
+        try:
+            with open("debug-9c515b.log", "a", encoding="utf-8") as _df:
+                _df.write(_json.dumps({"sessionId": "9c515b", "runId": "post-fix", "hypothesisId": "A", "location": "app.py:get_artwork:entry", "message": "get_artwork handler invoked", "data": {"artwork_id": artwork_id, "artwork_id_type": type(artwork_id).__name__}, "timestamp": int(time.time() * 1000)}) + "\n")
+        except Exception:
+            pass
+        # #endregion
 
-        if not artwork:
+        try:
+            art = _get_artwork_row(artwork_id)
+        except KeyError:
             return jsonify({"error": "Artwork not found"}), 404
 
-        return jsonify({
-            "artwork_id": artwork.id,
-            "title": artwork.title,
-            "artisan": artwork.artisan_name,
-            "artisan_did": artwork.artisan_did,
-            "ipfs_cid": artwork.ipfs_cid,
-            "tx_id": artwork.tx_id,
-            "explorer_url": artwork.explorer_url,
-            "created_at": artwork.created_at.isoformat() if artwork.created_at else None,
-            "verified": True,
-            "doc_type": "Registered cultural artifact",
-            "trust_grade": "A",
-            "trust_score": "Verified",
-            "signature_valid": True,
-            "hmac_valid": True,
-        })
+        conn = get_db_connection()
+        cur = dict_cursor(conn)
+        try:
+            cur.execute(
+                """
+                SELECT id, artwork_id, provenance_event_type, event_type, event_json, created_at
+                FROM artwork_provenance_events
+                WHERE artwork_id = %s
+                ORDER BY id ASC
+                """,
+                (artwork_id,),
+            )
+            events_raw = [dict(r) for r in cur.fetchall()]
+
+            cur.execute(
+                """
+                SELECT owner_name, owner_wallet
+                FROM artwork_ownership
+                WHERE artwork_id = %s
+                """,
+                (artwork_id,),
+            )
+            own = cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
+
+        provenance_history = []
+        for ev in events_raw:
+            item = {
+                "id": ev.get("id"),
+                "artwork_id": ev.get("artwork_id"),
+                "event_type": ev.get("event_type"),
+                "provenance_event_type": ev.get("provenance_event_type"),
+                "created_at": ev.get("created_at"),
+            }
+            raw_json = ev.get("event_json")
+            if raw_json:
+                try:
+                    parsed = _json.loads(raw_json)
+                    if isinstance(parsed, dict):
+                        item.update(parsed)
+                except Exception:
+                    pass
+            provenance_history.append(item)
+
+        current_owner = None
+        if own:
+            own = dict(own)
+            current_owner = own.get("owner_name") or own.get("owner_wallet")
+
+        payload = {
+            "artwork": {
+                "id": art.get("id"),
+                "title": art.get("title"),
+                "description": art.get("description"),
+                "materials": art.get("materials"),
+                "artisan_did": art.get("artisan_did"),
+                "ipfs_cid": art.get("ipfs_cid"),
+                "tx_id": art.get("tx_id"),
+                "status": art.get("status"),
+                "created_at": art.get("created_at"),
+            },
+            "current_owner": current_owner,
+            "provenance_history": provenance_history,
+        }
+
+        # #region agent log
+        try:
+            with open("debug-9c515b.log", "a", encoding="utf-8") as _df:
+                _df.write(_json.dumps({"sessionId": "9c515b", "runId": "post-fix", "hypothesisId": "A", "location": "app.py:get_artwork:success", "message": "artworks table lookup succeeded", "data": {"artwork_id": artwork_id, "found_id": art.get("id"), "provenance_count": len(provenance_history), "has_owner": current_owner is not None}, "timestamp": int(time.time() * 1000)}) + "\n")
+        except Exception:
+            pass
+        # #endregion
+
+        return jsonify(payload)
 
     except Exception as exc:
+        # #region agent log
+        try:
+            with open("debug-9c515b.log", "a", encoding="utf-8") as _df:
+                _df.write(_json.dumps({"sessionId": "9c515b", "runId": "post-fix", "hypothesisId": "A", "location": "app.py:get_artwork:error", "message": "get_artwork failed", "data": {"artwork_id": artwork_id, "error_type": type(exc).__name__, "error": str(exc)}, "timestamp": int(time.time() * 1000)}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         log.error("get_artwork error: %s", exc)
         return jsonify({
             "error": "Failed to fetch artwork",
