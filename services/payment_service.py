@@ -2,9 +2,11 @@ import hashlib
 import os
 import time
 import uuid
+from typing import Any
 
 from db import get_db_connection, dict_cursor
 from services.commerce.providers.razorpay_provider import RazorpayProvider
+from services.x402_service import X402Service
 
 
 SETTLEMENT_DOMESTIC_UPI = "domestic_upi"
@@ -238,3 +240,76 @@ def record_successful_acquisition(
         "settlement_mode": acq.get("settlement_mode") or SETTLEMENT_DOMESTIC_UPI,
         "timestamp": now,
     }
+
+
+class PaymentService:
+    """
+    Orchestrates the artwork acquisition payment flows.
+
+    This holds the business logic that previously lived inline in the Flask
+    `/acquire-artwork` route so that the route can stay thin. Behaviour is
+    identical to the original route: the same validation, status codes and
+    response bodies are returned. Genuine/unexpected errors (e.g. artwork not
+    found → KeyError) are allowed to propagate so the route's existing
+    exception handler can map them to 404/500 exactly as before.
+
+    x402 chain interaction is delegated to `X402Service`, which keeps this
+    class decoupled from the settlement implementation ahead of the later
+    facilitator phase.
+    """
+
+    def __init__(self, x402_service: X402Service | None = None) -> None:
+        self._x402 = x402_service or X402Service()
+
+    def process_acquisition(self, payload: dict[str, Any] | None) -> tuple[dict[str, Any], int]:
+        """
+        Handle a single POST to /acquire-artwork.
+
+        Returns a (response_body, status_code) tuple:
+          - 400 for invalid/missing artwork_id
+          - 402 with payment_requirements when no settlement proof is supplied
+          - 400 when settlement verification fails
+          - 200 with the verification result on success
+        """
+        payload = payload or {}
+
+        artwork_id = payload.get("artwork_id")
+        collector_name = (
+            payload.get("collector_name") or payload.get("buyer_name") or ""
+        ).strip()
+        collector_email = (
+            payload.get("collector_email") or payload.get("buyer_email") or ""
+        ).strip()
+        tx_id = (payload.get("tx_id") or "").strip()
+        wallet_address = (payload.get("wallet_address") or "").strip()
+        challenge_nonce = (payload.get("challenge_nonce") or "").strip()
+
+        if artwork_id is None:
+            return {"error": "artwork_id is required"}, 400
+        try:
+            artwork_id = int(artwork_id)
+        except Exception:
+            return {"error": "artwork_id must be an integer"}, 400
+
+        if not tx_id or not wallet_address or not challenge_nonce:
+            return (
+                {
+                    "error": "Payment Required",
+                    "payment_requirements": self._x402.create_payment_requirements(
+                        artwork_id=artwork_id,
+                        collector_name=collector_name,
+                        collector_email=collector_email,
+                    ),
+                },
+                402,
+            )
+
+        verification = self._x402.verify_payment(
+            tx_id=tx_id,
+            wallet_address=wallet_address,
+            challenge_nonce=challenge_nonce,
+        )
+        if not verification.get("verified"):
+            return {"error": "Settlement verification failed", **verification}, 400
+
+        return verification, 200

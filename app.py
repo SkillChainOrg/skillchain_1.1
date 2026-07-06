@@ -77,13 +77,17 @@ from db import (
 )
 from models import db, Artwork, ProvenanceEvent
 from auth_supabase import require_supabase_auth, require_artisan_auth
-from services.payment_service import create_acquisition_order, record_successful_acquisition
+from services.payment_service import (
+    create_acquisition_order,
+    record_successful_acquisition,
+    PaymentService,
+)
 from x402_service import (
-    create_payment_requirements,
     init_x402_db,
-    verify_x402_payment,
     _get_artwork_row,
 )
+
+payment_service = PaymentService()
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -186,45 +190,10 @@ def acquire_artwork():
         return jsonify({"ok": True}), 200
 
     try:
-        payload = request.get_json(silent=True) or {}
-        artwork_id = payload.get("artwork_id")
-        collector_name = (payload.get("collector_name") or payload.get("buyer_name") or "").strip()
-        collector_email = (payload.get("collector_email") or payload.get("buyer_email") or "").strip()
-        tx_id = (payload.get("tx_id") or "").strip()
-        wallet_address = (payload.get("wallet_address") or "").strip()
-        challenge_nonce = (payload.get("challenge_nonce") or "").strip()
-
-        if artwork_id is None:
-            return jsonify({"error": "artwork_id is required"}), 400
-        try:
-            artwork_id = int(artwork_id)
-        except Exception:
-            return jsonify({"error": "artwork_id must be an integer"}), 400
-
-        if not tx_id or not wallet_address or not challenge_nonce:
-            return (
-                jsonify(
-                    {
-                        "error": "Payment Required",
-                        "payment_requirements": create_payment_requirements(
-                            artwork_id=artwork_id,
-                            collector_name=collector_name,
-                            collector_email=collector_email,
-                        ),
-                    }
-                ),
-                402,
-            )
-
-        verification = verify_x402_payment(
-            tx_id=tx_id,
-            wallet_address=wallet_address,
-            challenge_nonce=challenge_nonce,
+        body, status_code = payment_service.process_acquisition(
+            request.get_json(silent=True) or {}
         )
-        if not verification.get("verified"):
-            return jsonify({"error": "Settlement verification failed", **verification}), 400
-
-        return jsonify(verification), 200
+        return jsonify(body), status_code
     except Exception as exc:
         log.error("acquire_artwork error: %s", exc)
         status_code = 404 if isinstance(exc, KeyError) else 500
