@@ -120,7 +120,7 @@ CORS(
         "X-API-Key",
         "X-Admin-Key"
     ],
-    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
 
 
