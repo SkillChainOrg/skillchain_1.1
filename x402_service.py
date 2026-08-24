@@ -1,5 +1,7 @@
 import base64
+from cmath import log
 import hashlib
+from logging import log
 import json
 import os
 import secrets
@@ -537,13 +539,21 @@ def verify_x402_payment(
     if current_owner != wallet_address:
         return {"verified": False, "reason": "ownership_not_updated"}
 
+    # -------------------------------------------------------
+    # DEBUG: isolate post-settlement failure
+    # -------------------------------------------------------
+    log.info("x402: blockchain ownership verified")
+
+    log.info("x402: marking challenge as used")
     _mark_challenge_used(
         nonce=challenge_nonce,
         wallet_address=wallet_address,
         tx_id=tx_id,
         group_id=group_id,
     )
+    log.info("x402: challenge marked as used")
 
+    log.info("x402: persisting successful acquisition")
     result = _persist_successful_acquisition(
         challenge=challenge,
         wallet_address=wallet_address,
@@ -551,4 +561,6 @@ def verify_x402_payment(
         group_id=group_id,
         payment_tx_id=payment_txn["id"],
     )
+    log.info("x402: acquisition persisted successfully")
+
     return {"verified": True, **result}
