@@ -1,3 +1,4 @@
+from cmath import log
 import hashlib
 import os
 import time
@@ -272,6 +273,7 @@ class PaymentService:
           - 200 with the verification result on success
         """
         payload = payload or {}
+        log.info("x402 process_acquisition payload=%r", payload)
 
         artwork_id = payload.get("artwork_id")
         collector_name = (

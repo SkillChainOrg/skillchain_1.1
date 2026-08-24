@@ -195,9 +195,12 @@ def acquire_artwork():
         )
         return jsonify(body), status_code
     except Exception as exc:
-        log.error("acquire_artwork error: %s", exc)
+        log.exception("acquire_artwork error")
         status_code = 404 if isinstance(exc, KeyError) else 500
-        return jsonify({"error": "Artwork acquisition failed", "detail": str(exc)}), status_code
+        return jsonify({
+            "error": "Artwork acquisition failed",
+            "detail": str(exc)
+        }), status_code
 
 
 @app.route("/artwork/<artwork_id>", methods=["GET"])
@@ -311,7 +314,7 @@ def get_x402_artwork(artwork_id: str):
         ), 200
 
     except Exception as exc:
-        log.error("get_x402_artwork error: %s", exc)
+        log.exception("get_x402_artwork error")
 
         return jsonify({
             "error": "Could not fetch artwork",
