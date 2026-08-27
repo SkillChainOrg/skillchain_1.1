@@ -59,7 +59,7 @@ def test_approve_registration_aes_gcm_path(monkeypatch):
 
     encrypt_result = ("FAKE_CT_B64", "FAKE_NONCE_B64")
     register_result = {
-        "did": "did:algo:testnet:FAKEADDR:abc123",
+        "did": "did:skillchain:testnet:FAKEADDR:abc123",
         "address": "FAKEADDR",
         "institution_id": "abc123def456abcd",
         "api_key": "plaintext-api-key",
@@ -124,7 +124,7 @@ def test_approve_registration_vault_path(monkeypatch):
     }
 
     register_result = {
-        "did": "did:algo:testnet:VAULTADDR:abc123",
+        "did": "did:skillchain:testnet:VAULTADDR:abc123",
         "address": "VAULTADDR",
         "institution_id": "abc123def456abcd",
         "api_key": "plaintext-api-key-vault",

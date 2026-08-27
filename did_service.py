@@ -60,7 +60,7 @@ from signing_service import get_issuer_address, derive_institution_id, sign_tran
 
 # W3C DID Document generation (non-breaking addition)
 try:
-    from w3c_did_service import generate_and_store_did_document
+    from w3c_did_service import build_skillchain_did, generate_and_store_did_document
     _W3C_DID_ENABLED = True
 except ImportError:
     _W3C_DID_ENABLED = False
@@ -552,7 +552,7 @@ def register_did(
     inst_suffix = hashlib.sha256(
         _normalise_institution(institution_name).encode()
     ).hexdigest()[:16]
-    did = f"did:algo:testnet:{institution_address}:{inst_suffix}"
+    did = build_skillchain_did("testnet", institution_address, inst_suffix)
 
     api_key      = generate_api_key()
     api_key_hash = _hash_api_key(api_key)   # only the hash is stored in DB
