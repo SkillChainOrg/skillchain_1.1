@@ -31,6 +31,34 @@ def _add_column_if_missing(cur, table: str, column: str, definition: str) -> Non
         log.info("Migration: added column %s.%s", table, column)
 
 
+def _ensure_artisan_id_constraint(cur) -> None:
+    """Safely enforce artisan_id constraints without rewriting legacy rows."""
+    cur.execute("SELECT COUNT(*) FROM artisans WHERE artisan_id IS NULL")
+    null_count = cur.fetchone()[0]
+    if null_count:
+        raise RuntimeError(
+            f"Cannot enforce artisans.artisan_id NOT NULL: {null_count} NULL value(s) exist"
+        )
+
+    cur.execute(
+        """
+        SELECT artisan_id
+        FROM artisans
+        GROUP BY artisan_id
+        HAVING COUNT(*) > 1
+        LIMIT 1
+        """
+    )
+    duplicate = cur.fetchone()
+    if duplicate:
+        raise RuntimeError(
+            "Cannot enforce unique artisans.artisan_id: duplicate value exists "
+            f"({duplicate[0]!r})"
+        )
+
+    cur.execute("ALTER TABLE artisans ALTER COLUMN artisan_id SET NOT NULL")
+
+
 def run_migrations() -> None:
     conn = get_db_connection()
     cur  = conn.cursor()
@@ -179,7 +207,7 @@ def run_migrations() -> None:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS artisans (
                 id                SERIAL PRIMARY KEY,
-                artisan_id        TEXT UNIQUE,
+                artisan_id        TEXT UNIQUE NOT NULL,
                 did               TEXT,
                 name              TEXT NOT NULL,
                 craft_type        TEXT,
@@ -224,6 +252,10 @@ def run_migrations() -> None:
             ("profile_image",       "TEXT"),
         ]:
             _add_column_if_missing(cur, "artisans", col, col_def)
+
+        # Validate legacy rows before tightening the existing table. The
+        # surrounding migration transaction rolls back on invalid data.
+        _ensure_artisan_id_constraint(cur)
 
         # ── artworks ──────────────────────────────────────────────────────────
         cur.execute("""

@@ -13,7 +13,7 @@ _PROJECT_DIR = os.path.dirname(_TESTS_DIR)
 sys.path.insert(0, _PROJECT_DIR)
 
 os.environ.setdefault("DATABASE_URL", "postgresql://fake/fake")
-os.environ.setdefault("HMAC_SECRET", "test-hmac-secret")
+os.environ.setdefault("HMAC_MASTER_KEY", "test-hmac-secret")
 os.environ.setdefault("KEY_ENCRYPTION_KEY", "a" * 64)
 os.environ.setdefault("VAULT_ENABLED", "false")
 os.environ.setdefault("DEMO_MODE", "true")
@@ -84,7 +84,7 @@ def _patch_verification_dependencies(monkeypatch, *, cert_hash: str, integrity_h
             "hmac_value": "expected-hmac",
             "doc_type": "artwork",
             "issued_at": "2026-05-15",
-            "artisan_did": "did:algo:testnet:ADDR123:artisan",
+            "artisan_did": "did:skillchain:testnet:ADDR123:artisan",
             "artisan": "Test Artisan",
         },
     )

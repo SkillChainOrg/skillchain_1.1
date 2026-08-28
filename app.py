@@ -32,6 +32,7 @@ import os
 import re
 import secrets
 import time
+import uuid
 import zipfile
 import json as _json
 
@@ -67,6 +68,7 @@ from digilocker_service import (
 from identity_service import bind_identity, lookup_identity
 from queue_service import queue_batch, get_batch_status
 from ipfs_service import pin_with_retry
+from w3c_did_service import build_skillchain_did
 import db_migrations
 from db import (
     dict_cursor,
@@ -1424,17 +1426,14 @@ def artisan_me():
 
 # ── Artisan-first routes ────────────────────────────────────────────────
 
-def _derive_artisan_id(name: str) -> str:
+def _generate_artisan_id() -> str:
+    """Generate the stable SkillChain identity for a newly created artisan.
+
+    This deliberately has no profile-data inputs.  The ``artisan/`` prefix is
+    retained because key storage and signing routes use it to distinguish
+    artisan identities from institution identities.
     """
-    Derive a stable, URL-safe artisan_id from the artisan's name.
-    Format: 'artisan/<16-char-hex>'
-    The 'artisan/' prefix is used throughout the signing and Vault routing
-    layers to distinguish artisan keys from institution keys.
-    Vault path: secret/skillchain/artisan/<16-char-hex>
-    """
-    import hashlib
-    suffix = hashlib.sha256(name.strip().lower().encode()).hexdigest()[:16]
-    return f"artisan/{suffix}"
+    return f"artisan/{uuid.uuid4()}"
 
 
 def _demo_mode_enabled() -> bool:
@@ -1569,7 +1568,6 @@ def register_artisan():
             except (TypeError, ValueError):
                 return jsonify({"error": "years_of_experience must be a number"}), 400
 
-        artisan_id = _derive_artisan_id(name)
         created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         conn = get_db_connection()
@@ -1600,6 +1598,10 @@ def register_artisan():
                     "message": "Existing artisan restored"
                 }), 200
 
+            # Generate an internal identity only for a new profile.  Existing
+            # Supabase-linked profiles keep their originally assigned value.
+            artisan_id = _generate_artisan_id()
+
             # Create new artisan
             cur.execute(
                 """
@@ -1625,7 +1627,7 @@ def register_artisan():
                     %s, %s, %s, %s,
                     'pending', %s
                 )
-                ON CONFLICT (artisan_id) DO NOTHING
+                ON CONFLICT DO NOTHING
                 """,
                 (
                     artisan_id,
@@ -1648,9 +1650,30 @@ def register_artisan():
             inserted = cur.rowcount
 
             if inserted == 0:
-                return jsonify({
-                    "error": "An artisan with this name already exists"
-                }), 409
+                # The unique Supabase linkage is authoritative for retries.
+                # A concurrent request may have created the profile after the
+                # initial lookup, so return that existing profile instead of
+                # creating a second one.
+                cur.execute(
+                    """
+                    SELECT id, artisan_id, status, did
+                    FROM artisans
+                    WHERE supabase_id = %s
+                    """,
+                    (supabase_id,),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    return jsonify({
+                        "success": True,
+                        "existing": True,
+                        "id": existing["id"],
+                        "artisan_id": existing["artisan_id"],
+                        "status": existing["status"],
+                        "did": existing["did"],
+                        "message": "Existing artisan restored",
+                    }), 200
+                raise RuntimeError("Unable to create a unique artisan identity")
 
             # Fetch created artisan
             cur.execute(
@@ -1779,7 +1802,7 @@ def admin_approve_artisan(artisan_db_id: int):
             return jsonify({"error": "Artisan not found or already processed"}), 404
 
         artisan      = dict(artisan)
-        artisan_id   = artisan["artisan_id"]   # e.g. 'artisan/8f3a1c9d24b07e5f'
+        artisan_id   = artisan["artisan_id"]
         artisan_name = artisan["name"]
 
         # ── Generate Ed25519 keypair + Algorand address ───────────────────
@@ -1797,9 +1820,9 @@ def admin_approve_artisan(artisan_db_id: int):
         algorand_wallet  = _ae.encode_address(pub_bytes)
         ed25519_pubkey   = _b64.b64encode(pub_bytes).decode()
 
-        # DID follows same pattern as institutions: did:algo:testnet:<address>:<suffix>
+        # SkillChain DID: did:skillchain:testnet:<address>:<artisan identifier>
         id_suffix = artisan_id.split("/", 1)[1]  # strip 'artisan/' prefix
-        artisan_did = f"did:algo:testnet:{algorand_wallet}:{id_suffix}"
+        artisan_did = build_skillchain_did("testnet", algorand_wallet, id_suffix)
 
         # ── Store key (Vault primary, AES-GCM fallback) ─────────────────
         enc_private_key: str | None = None

@@ -56,7 +56,8 @@ def derive_institution_id(institution_name: str) -> str:
 
     Produces the same 16-char hex suffix that did_service.register_did() uses
     when constructing the DID, ensuring Vault path and DID are consistent.
-    Kept for backward compatibility; artisan IDs use _derive_artisan_id() in app.py.
+    Artisan IDs are generated independently by the artisan registration path;
+    this helper remains specific to legacy institution identifiers.
     """
     return hashlib.sha256(institution_name.strip().lower().encode()).hexdigest()[:16]
 

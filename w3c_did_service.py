@@ -1,13 +1,17 @@
 """
 w3c_did_service.py — W3C-compliant DID Document generation and resolution for SkillChain.
 
-DID Method Spec: did:algo
-─────────────────────────
-Method:   algo
+DID Method: did:skillchain
+──────────────────────────
+Method:   skillchain
 Network:  testnet | mainnet
-Format:   did:algo:<network>:<algorand_address>:<institution_id_hex>
+Format:   did:skillchain:<network>:<algorand_address>:<identifier>
 
-Example:  did:algo:testnet:ABC123...XYZ:8f3a1c9d24b07e5f
+Example:  did:skillchain:testnet:ABC123...XYZ:8f3a1c9d24b07e5f
+
+This is SkillChain's DID method namespace; it is designed to be compatible
+with W3C DID Core syntax and DID Documents, but is not a W3C-standardized DID
+method.
 
 Creation:
   1. An Algorand Ed25519 keypair is generated at institution approval time.
@@ -48,12 +52,29 @@ log = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-# DID format:  did:algo:testnet:<58-char-base32-address>:<16-char-hex>
+DID_METHOD = "did:skillchain"
+
+
+def build_skillchain_did(network: str, algorand_address: str, identifier: str) -> str:
+    """Construct the canonical SkillChain DID for a new identity."""
+    return f"{DID_METHOD}:{network}:{algorand_address}:{identifier}"
+
+
+# DID format: did:skillchain:testnet:<58-char-base32-address>:<identifier>
 # Algorand addresses are 58 characters, base32-encoded (A-Z + 2-7).
+_IDENTIFIER_RE = r"(?:[0-9a-f]{16}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})"
 _DID_RE = re.compile(
-    r"^did:algo:(testnet|mainnet):"
+    rf"^{re.escape(DID_METHOD)}:(testnet|mainnet):"
     r"([A-Z2-7]{58}):"  # Algorand address (exactly 58 chars, uppercase base32)
-    r"([0-9a-f]{16})$"  # institution_id hex (16 chars)
+    rf"({_IDENTIFIER_RE})$"  # institution ID hash or UUID artisan ID
+)
+
+# Resolution-only compatibility for records created before the method rename.
+# New DID validation deliberately uses _DID_RE and rejects this legacy format.
+_LEGACY_DID_RE = re.compile(
+    r"^did:algo:(testnet|mainnet):"
+    r"([A-Z2-7]{58}):"
+    rf"({_IDENTIFIER_RE})$"
 )
 
 # DID contexts
@@ -111,8 +132,8 @@ def parse_did(did: str) -> dict | None:
     Validate and parse a SkillChain DID string.
 
     Returns:
-        dict with keys: network, address, institution_id_hex
-        None if the DID does not match the did:algo method format.
+        dict with keys: network, address, identifier
+        None if the DID does not match the did:skillchain method format.
     """
     m = _DID_RE.match(did)
     if not m:
@@ -120,12 +141,17 @@ def parse_did(did: str) -> dict | None:
     return {
         "network":           m.group(1),
         "address":           m.group(2),
-        "institution_id_hex": m.group(3),
+        "identifier":        m.group(3),
     }
 
 
 def is_valid_did(did: str) -> bool:
     return parse_did(did) is not None
+
+
+def is_legacy_did(did: str) -> bool:
+    """Return whether *did* is a historical did:algo record resolvable in place."""
+    return _LEGACY_DID_RE.match(did) is not None
 
 
 # ── Public key derivation ─────────────────────────────────────────────────────
@@ -164,7 +190,7 @@ def generate_did_document(
       - Ed25519VerificationKey2020 (https://w3c-ccg.github.io/lds-ed25519-2020/)
 
     Args:
-        did:               Full DID string (did:algo:testnet:<address>:<hex>)
+        did:               Full DID string (did:skillchain:testnet:<address>:<identifier>)
         institution_name:  Human-readable institution name.
         domain:            Official institution domain (e.g. "iitb.ac.in").
         algorand_address:  Base32 Algorand public address (source of the public key).
@@ -357,7 +383,9 @@ def resolve_did(did: str) -> dict | None:
     Returns:
         DID Document dict, or None if not found / invalid.
     """
-    if not is_valid_did(did):
+    # Historical did:algo records remain resolvable by their stored identifier,
+    # but are not accepted by the new-DID validator above.
+    if not (is_valid_did(did) or is_legacy_did(did)):
         return None
 
     document = _fetch_from_cache(did)
@@ -518,11 +546,11 @@ if __name__ == "__main__":
 
     # Deterministic test address (Algorand testnet example)
     TEST_ADDRESS = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    TEST_DID = f"did:algo:testnet:{TEST_ADDRESS}:8f3a1c9d24b07e5f"
+    TEST_DID = f"did:skillchain:testnet:{TEST_ADDRESS}:8f3a1c9d24b07e5f"
 
     print("=== DID Validation ===")
     print(f"valid DID: {is_valid_did(TEST_DID)}")
-    print(f"bad DID:   {is_valid_did('did:algo:testnet:tooshort:x')}")
+    print(f"bad DID:   {is_valid_did('did:algo:testnet:tooshort:x')}")  # legacy/malformed
 
     print("\n=== DID Document ===")
     doc = generate_did_document(
