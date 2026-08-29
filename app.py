@@ -1388,7 +1388,7 @@ def update_artisan_profile():
             cur.execute(
                 """
                 SELECT id, artisan_id, did, name, craft_type, cluster, location,
-                       algorand_wallet, ed25519_pubkey, status, supabase_id, email,
+                       algorand_wallet, ed25519_pubkey, status, lifecycle_state, supabase_id, email,
                        profile_completed, approved_at, created_at
                 FROM artisans
                 WHERE supabase_id = %s
@@ -1425,6 +1425,58 @@ def artisan_me():
 
 
 # ── Artisan-first routes ────────────────────────────────────────────────
+
+ARTISAN_LIFECYCLE_STATES = frozenset({
+    "APPLIED", "APPROVED", "WALLET_PROVISIONED", "DID_ISSUED",
+    "ACTIVE", "SUSPENDED", "REVOKED", "REJECTED",
+})
+
+ARTISAN_LIFECYCLE_TRANSITIONS = {
+    "APPLIED": {"APPROVED", "REJECTED"},
+    "APPROVED": {"WALLET_PROVISIONED"},
+    "WALLET_PROVISIONED": {"DID_ISSUED"},
+    "DID_ISSUED": {"ACTIVE"},
+    "ACTIVE": {"SUSPENDED", "REVOKED"},
+    "SUSPENDED": {"ACTIVE", "REVOKED"},
+    "REVOKED": set(),
+    "REJECTED": set(),
+}
+
+
+def transition_artisan_lifecycle(
+    artisan_id: str, expected_state: str, new_state: str
+) -> bool:
+    """Atomically transition an artisan through the canonical lifecycle."""
+    if expected_state not in ARTISAN_LIFECYCLE_STATES:
+        raise ValueError(f"Unknown artisan lifecycle state: {expected_state}")
+    if new_state not in ARTISAN_LIFECYCLE_STATES:
+        raise ValueError(f"Unknown artisan lifecycle state: {new_state}")
+    if new_state not in ARTISAN_LIFECYCLE_TRANSITIONS[expected_state]:
+        raise ValueError(
+            f"Invalid artisan lifecycle transition: {expected_state} -> {new_state}"
+        )
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE artisans
+            SET lifecycle_state = %s
+            WHERE artisan_id = %s AND lifecycle_state = %s
+            """,
+            (new_state, artisan_id, expected_state),
+        )
+        transitioned = cur.rowcount == 1
+        if transitioned:
+            conn.commit()
+        else:
+            conn.rollback()
+        return transitioned
+    finally:
+        cur.close()
+        conn.close()
+
 
 def _generate_artisan_id() -> str:
     """Generate the stable SkillChain identity for a newly created artisan.
@@ -1578,7 +1630,7 @@ def register_artisan():
             # Restore existing artisan if already linked
             cur.execute(
                 """
-                SELECT id, artisan_id, status, did
+                SELECT id, artisan_id, status, lifecycle_state, did
                 FROM artisans
                 WHERE supabase_id = %s
                 """,
@@ -1594,6 +1646,7 @@ def register_artisan():
                     "id": existing["id"],
                     "artisan_id": existing["artisan_id"],
                     "status": existing["status"],
+                    "lifecycle_state": existing["lifecycle_state"],
                     "did": existing["did"],
                     "message": "Existing artisan restored"
                 }), 200
@@ -1619,13 +1672,14 @@ def register_artisan():
                     last_login,
                     profile_completed,
                     status,
+                    lifecycle_state,
                     created_at
                 )
                 VALUES (
                     %s, %s, %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s, %s,
-                    'pending', %s
+                    'pending', 'APPLIED', %s
                 )
                 ON CONFLICT DO NOTHING
                 """,
@@ -1656,7 +1710,7 @@ def register_artisan():
                 # creating a second one.
                 cur.execute(
                     """
-                    SELECT id, artisan_id, status, did
+                    SELECT id, artisan_id, status, lifecycle_state, did
                     FROM artisans
                     WHERE supabase_id = %s
                     """,
@@ -1670,6 +1724,7 @@ def register_artisan():
                         "id": existing["id"],
                         "artisan_id": existing["artisan_id"],
                         "status": existing["status"],
+                        "lifecycle_state": existing["lifecycle_state"],
                         "did": existing["did"],
                         "message": "Existing artisan restored",
                     }), 200
@@ -1699,6 +1754,7 @@ def register_artisan():
             "email": email,
             "supabase_id": supabase_id,
             "status": "pending",
+            "lifecycle_state": "APPLIED",
             "created_at": created_at,
             "message": "Artisan registered. Awaiting admin approval before identity is created.",
         }), 201
@@ -1715,7 +1771,7 @@ def debug_artisans():
 
     try:
         cur.execute("""
-            SELECT id, artisan_id, name, status, did, created_at
+            SELECT id, artisan_id, name, status, lifecycle_state, did, created_at
             FROM artisans
             ORDER BY created_at DESC
             LIMIT 20
@@ -1732,7 +1788,7 @@ def debug_artisans():
 
 @app.route("/admin/artisans/pending", methods=["GET"])
 def admin_artisans_pending():
-    """List all artisans with status = pending. Requires X-Admin-Key."""
+    """List applications in the authoritative APPLIED state."""
     try:
         if request.headers.get("X-Admin-Key") != ADMIN_KEY:
             return jsonify({"error": "Unauthorized"}), 403
@@ -1742,8 +1798,8 @@ def admin_artisans_pending():
         try:
             cur.execute(
                 """
-                SELECT id, artisan_id, name, craft_type, cluster, location, created_at
-                FROM artisans WHERE status = 'pending'
+                SELECT id, artisan_id, name, craft_type, cluster, location, lifecycle_state, created_at
+                FROM artisans WHERE lifecycle_state = 'APPLIED'
                 ORDER BY created_at DESC
                 """
             )
@@ -1762,35 +1818,20 @@ def admin_artisans_pending():
 @app.route("/admin/approve-artisan/<int:artisan_db_id>", methods=["POST"])
 def admin_approve_artisan(artisan_db_id: int):
     """
-    Stage 2 of artisan onboarding: generate identity & approve.
+    Stage 2 of artisan onboarding: approve an APPLIED application.
 
-    This is the ONLY place where:
-      - Ed25519 keypair is generated
-      - Algorand wallet address is derived
-      - DID is created
-      - Private key is written to Vault (or AES-GCM in dev mode)
-
-    Vault path: secret/skillchain/artisan/<artisan_id_suffix>
-    Private key is also stored temporarily in artisans.enc_private_key
-    (AES-GCM, same format as did_registry) as deprecated fallback.
+    Approval records only the APPLIED -> APPROVED lifecycle transition.
+    Wallet, DID, and Vault provisioning belong to later onboarding stages.
     """
     try:
         if request.headers.get("X-Admin-Key") != ADMIN_KEY:
             return jsonify({"error": "Unauthorized"}), 403
 
-        payload = request.get_json(silent=True) or {}
-        reuse_identity = payload.get("reuse_identity")
-        if reuse_identity is None:
-            reuse_identity = _demo_mode_enabled()
-        else:
-            reuse_identity = bool(reuse_identity)
-
-        # Fetch pending artisan
         conn = get_db_connection()
-        cur  = dict_cursor(conn)
+        cur = dict_cursor(conn)
         try:
             cur.execute(
-                "SELECT * FROM artisans WHERE id = %s AND status = 'pending'",
+                "SELECT artisan_id, lifecycle_state FROM artisans WHERE id = %s",
                 (artisan_db_id,),
             )
             artisan = cur.fetchone()
@@ -1799,154 +1840,44 @@ def admin_approve_artisan(artisan_db_id: int):
             conn.close()
 
         if not artisan:
-            return jsonify({"error": "Artisan not found or already processed"}), 404
-
-        artisan      = dict(artisan)
-        artisan_id   = artisan["artisan_id"]
-        artisan_name = artisan["name"]
-
-        # ── Generate Ed25519 keypair + Algorand address ───────────────────
-        from nacl.encoding import RawEncoder as _Raw
-        from algosdk import encoding as _ae
-        import base64 as _b64
-
-        signing_key      = _build_artisan_signing_key(
-            artisan_id,
-            reuse_identity=reuse_identity,
-        )
-        seed_bytes       = signing_key.encode(encoder=_Raw)              # 32 bytes
-        pub_bytes        = signing_key.verify_key.encode(encoder=_Raw)   # 32 bytes
-        private_key_bytes = seed_bytes + pub_bytes                        # 64 bytes
-        algorand_wallet  = _ae.encode_address(pub_bytes)
-        ed25519_pubkey   = _b64.b64encode(pub_bytes).decode()
-
-        # SkillChain DID: did:skillchain:testnet:<address>:<artisan identifier>
-        id_suffix = artisan_id.split("/", 1)[1]  # strip 'artisan/' prefix
-        artisan_did = build_skillchain_did("testnet", algorand_wallet, id_suffix)
-
-        # ── Store key (Vault primary, AES-GCM fallback) ─────────────────
-        enc_private_key: str | None = None
-        key_nonce:       str | None = None
-
-        try:
-            from vault_client import is_vault_enabled
-            if is_vault_enabled():
-                from vault_client import write_key
-                write_key(artisan_id, private_key_bytes)
-                log.info("Vault write confirmed for artisan_id=%s", artisan_id)
-            else:
-                from key_vault import encrypt_key
-                enc_private_key, key_nonce = encrypt_key(private_key_bytes)
-        finally:
-            # Best-effort memory minimisation
-            del private_key_bytes
-            del seed_bytes
-            del pub_bytes
-            del signing_key
-
-        funding_tx_id = None
-        funding_amount_microalgos = 0
-        funding_status = "not_requested"
-        if _demo_mode_enabled():
-            funding_status = "already_funded"
-            funding_tx_id, funding_amount_microalgos, _ = _fund_demo_artisan_wallet_if_needed(
-                algorand_wallet,
-            )
-            if funding_tx_id:
-                funding_status = "funded"
-            log.info(
-                "DEMO_MODE artisan bootstrap complete | artisan_id=%s wallet=%s funding_status=%s funding_tx_id=%s funded_amount=%s",
-                artisan_id,
-                algorand_wallet,
-                funding_status,
-                funding_tx_id,
-                funding_amount_microalgos,
-            )
+            return jsonify({"error": "Artisan not found"}), 404
+        if artisan["lifecycle_state"] != "APPLIED":
+            return jsonify({
+                "error": "Artisan is not in APPLIED state",
+                "lifecycle_state": artisan["lifecycle_state"],
+            }), 409
+        if not transition_artisan_lifecycle(
+            artisan["artisan_id"], "APPLIED", "APPROVED"
+        ):
+            return jsonify({"error": "Artisan approval conflict"}), 409
 
         approved_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         approved_by = request.headers.get("X-Approved-By", "admin")
-
-        # ── Persist approved artisan ───────────────────────────
         conn = get_db_connection()
-        cur  = conn.cursor()
+        cur = conn.cursor()
         try:
             cur.execute(
                 """
                 UPDATE artisans
-                SET did             = %s,
-                    algorand_wallet = %s,
-                    ed25519_pubkey  = %s,
-                    enc_private_key = %s,
-                    key_nonce       = %s,
-                    status          = 'approved',
-                    approved_by     = %s,
-                    approved_at     = %s
-                WHERE id = %s
+                SET status = 'approved', approved_by = %s, approved_at = %s
+                WHERE id = %s AND lifecycle_state = 'APPROVED'
                 """,
-                (
-                    artisan_did, algorand_wallet, ed25519_pubkey,
-                    enc_private_key, key_nonce,
-                    approved_by, approved_at, artisan_db_id,
-                ),
+                (approved_by, approved_at, artisan_db_id),
             )
             conn.commit()
-            # ── Register DID document for resolver ───────────────────────────
-
-            cur.execute(
-                """
-                INSERT INTO did_registry (
-                    did,
-                    institution,
-                    institution_address,
-                    address,
-                    public_key,
-                    domain,
-                    registered_at,
-                    wallet_version,
-                    revoked
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    artisan_did,
-                    artisan_name,
-                    algorand_wallet,
-                    algorand_wallet,
-                    ed25519_pubkey,
-                    f"{artisan_id.replace('/', '-')}.skillchain.artisan",
-                    approved_at,
-                    1,
-                    0,
-                ),
-            )
-
-            conn.commit()
-       
         finally:
             cur.close()
             conn.close()
-
-        log.info(
-            "Artisan approved: id=%s artisan_id=%s did=%s wallet=%s",
-            artisan_db_id, artisan_id, artisan_did, algorand_wallet,
-        )
         return jsonify({
-            "success":        True,
-            "id":             artisan_db_id,
-            "artisan_id":     artisan_id,
-            "did":            artisan_did,
-            "algorand_wallet": algorand_wallet,
-            "ed25519_pubkey": ed25519_pubkey,
-            "reuse_identity": reuse_identity,
-            "status":         "approved",
-            "approved_by":    approved_by,
-            "approved_at":    approved_at,
-            "funding_tx_id":  funding_tx_id,
-            "funding_status": funding_status,
-            "funded_amount_microalgos": funding_amount_microalgos,
-            "vault_path":     f"secret/skillchain/{artisan_id}",
-            "message":        "Artisan identity created. Keys stored in Vault (or AES-GCM fallback).",
-        })
+            "success": True,
+            "id": artisan_db_id,
+            "artisan_id": artisan["artisan_id"],
+            "status": "approved",
+            "lifecycle_state": "APPROVED",
+            "did": None,
+            "algorand_wallet": None,
+            "message": "Artisan approved. Provisioning stages remain pending.",
+        }), 200
 
     except Exception as exc:
         log.error("admin_approve_artisan error for id=%s: %s", artisan_db_id, exc)
@@ -1964,33 +1895,47 @@ def admin_reject_artisan(artisan_db_id: int):
         reason = data.get("reason", "")
 
         conn = get_db_connection()
-        cur  = conn.cursor()
+        cur  = dict_cursor(conn)
         try:
             cur.execute(
-                """
-                UPDATE artisans
-                SET status      = 'rejected',
-                    approved_by = %s,
-                    approved_at = %s
-                WHERE id = %s AND status = 'pending'
-                """,
-                (request.headers.get("X-Approved-By", "admin"),
-                 time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                 artisan_db_id),
+                "SELECT artisan_id, lifecycle_state FROM artisans WHERE id = %s",
+                (artisan_db_id,),
             )
-            conn.commit()
-            rows = cur.rowcount
+            artisan = cur.fetchone()
         finally:
             cur.close()
             conn.close()
 
-        if rows == 0:
-            return jsonify({"error": "Artisan not found or not in pending state"}), 404
+        if not artisan:
+            return jsonify({"error": "Artisan not found"}), 404
+        if not transition_artisan_lifecycle(artisan["artisan_id"], "APPLIED", "REJECTED"):
+            return jsonify({
+                "error": "Artisan is not in APPLIED state",
+                "lifecycle_state": artisan["lifecycle_state"],
+            }), 409
+
+        approved_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        conn = get_db_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                UPDATE artisans
+                SET status = 'rejected', approved_by = %s, approved_at = %s
+                WHERE id = %s AND lifecycle_state = 'REJECTED'
+                """,
+                (request.headers.get("X-Approved-By", "admin"), approved_at, artisan_db_id),
+            )
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
 
         return jsonify({
             "success":  True,
             "id":       artisan_db_id,
             "status":   "rejected",
+            "lifecycle_state": "REJECTED",
             "reason":   reason,
         })
 
@@ -2003,7 +1948,7 @@ def admin_reject_artisan(artisan_db_id: int):
 @limiter.limit("10 per minute")
 def add_artwork():
     """
-    Register an artwork for an approved artisan.
+    Register an artwork for an ACTIVE artisan.
 
     Multipart form fields:
       - artwork      : image file (multipart)
@@ -2013,7 +1958,7 @@ def add_artwork():
       - materials    : comma-separated materials list
 
     Flow:
-      1. Validate artisan is approved
+      1. Validate artisan lifecycle_state is ACTIVE
       2. Normalize image + compute SHA-256 hash
       3. Sign hash with artisan's Ed25519 key
       4. Pin artisan-format metadata to IPFS
@@ -2038,7 +1983,7 @@ def add_artwork():
         try:
             cur.execute(
                 """
-                SELECT id, artisan_id, name, algorand_wallet, status
+                SELECT id, artisan_id, name, algorand_wallet, status, lifecycle_state
                 FROM artisans WHERE did = %s
                 """,
                 (artisan_did,),
@@ -2052,10 +1997,11 @@ def add_artwork():
             return jsonify({"error": "Artisan not found for the given DID"}), 404
         artisan = dict(artisan)
 
-        if artisan["status"] != "approved":
+        if artisan["lifecycle_state"] != "ACTIVE":
             return jsonify({
-                "error":  "Artisan is not approved",
+                "error":  "Artisan is not active",
                 "status": artisan["status"],
+                "lifecycle_state": artisan["lifecycle_state"],
             }), 403
 
         artisan_id_key  = artisan["artisan_id"]    # e.g. 'artisan/8f3a1c9d24b07e5f'
@@ -2183,7 +2129,7 @@ def resolve_artisan(did: str):
             cur.execute(
                 """
                 SELECT id, artisan_id, name, craft_type, cluster, location,
-                       algorand_wallet, ed25519_pubkey, status, approved_at, created_at
+                       algorand_wallet, ed25519_pubkey, status, lifecycle_state, approved_at, created_at
                 FROM artisans WHERE did = %s
                 """,
                 (did,),
@@ -2198,7 +2144,10 @@ def resolve_artisan(did: str):
 
         artisan = dict(artisan)
         if artisan["status"] != "approved":
-            return jsonify({"error": "Artisan not yet approved", "status": artisan["status"]}), 403
+            return jsonify({
+                "error": "Artisan not yet approved",
+                "status": artisan["status"],
+            }), 403
 
         return jsonify({
             "did":             did,
@@ -2209,6 +2158,7 @@ def resolve_artisan(did: str):
             "algorand_wallet": artisan["algorand_wallet"],
             "ed25519_pubkey":  artisan["ed25519_pubkey"],
             "status":          artisan["status"],
+            "lifecycle_state": artisan["lifecycle_state"],
             "approved_at":     artisan["approved_at"],
             "created_at":      artisan["created_at"],
         })
@@ -2319,7 +2269,7 @@ def get_artisan_by_id(artisan_id: str):
             cur.execute(
                 """
                 SELECT id, artisan_id, did, name, craft_type,
-                       cluster, location, status,
+                       cluster, location, status, lifecycle_state,
                        algorand_wallet, approved_at, created_at
                 FROM artisans
                 WHERE artisan_id = %s

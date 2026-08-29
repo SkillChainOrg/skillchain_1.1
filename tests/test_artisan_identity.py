@@ -53,6 +53,7 @@ class _Connection:
                 last_login TEXT,
                 profile_completed BOOLEAN,
                 status TEXT,
+                lifecycle_state TEXT NOT NULL DEFAULT 'APPLIED',
                 created_at TEXT,
                 algorand_wallet TEXT
             )
@@ -107,6 +108,7 @@ def test_identically_named_artisans_receive_distinct_ids_and_api_field(registrat
     assert first_status == second_status == 201
     assert first["artisan_id"] != second["artisan_id"]
     assert first["artisan_id"].startswith("artisan/")
+    assert first["lifecycle_state"] == second["lifecycle_state"] == "APPLIED"
     assert "artisan_id" in second
 
 
