@@ -219,6 +219,7 @@ def run_migrations() -> None:
                 key_nonce         TEXT,
                 vault_key_version TEXT,
                 status            TEXT DEFAULT 'pending',
+                lifecycle_state   TEXT NOT NULL DEFAULT 'APPLIED',
                 approved_by       TEXT,
                 approved_at       TEXT,
                 created_at        TEXT
@@ -237,6 +238,7 @@ def run_migrations() -> None:
             ("key_nonce",         "TEXT"),
             ("vault_key_version", "TEXT"),
             ("status",            "TEXT DEFAULT 'pending'"),
+            ("lifecycle_state",   "TEXT DEFAULT 'APPLIED'"),
             ("approved_by",       "TEXT"),
             ("approved_at",       "TEXT"),
             ("created_at",        "TEXT"),
@@ -256,6 +258,14 @@ def run_migrations() -> None:
         # Validate legacy rows before tightening the existing table. The
         # surrounding migration transaction rolls back on invalid data.
         _ensure_artisan_id_constraint(cur)
+
+        # Preserve existing records conservatively. Legacy administrative
+        # status maps to the equivalent lifecycle checkpoint; approved never
+        # implies ACTIVE because provisioning evidence is not inferred here.
+        cur.execute("UPDATE artisans SET lifecycle_state = 'APPROVED' WHERE lifecycle_state = 'APPLIED' AND status = 'approved'")
+        cur.execute("UPDATE artisans SET lifecycle_state = 'REJECTED' WHERE lifecycle_state = 'APPLIED' AND status = 'rejected'")
+        cur.execute("UPDATE artisans SET lifecycle_state = 'APPLIED' WHERE lifecycle_state IS NULL")
+        cur.execute("ALTER TABLE artisans ALTER COLUMN lifecycle_state SET NOT NULL")
 
         # ── artworks ──────────────────────────────────────────────────────────
         cur.execute("""

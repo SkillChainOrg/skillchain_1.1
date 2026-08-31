@@ -31,7 +31,7 @@ load_dotenv()
 
 
 
-HMAC_SECRET = os.getenv("HMAC_SECRET")
+HMAC_SECRET = os.getenv("HMAC_MASTER_KEY")
 if not HMAC_SECRET:
     raise RuntimeError(
         "HMAC_SECRET is not set. Add it to your .env file.\n"

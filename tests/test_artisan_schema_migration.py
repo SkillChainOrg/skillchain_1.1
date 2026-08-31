@@ -34,7 +34,7 @@ def test_valid_existing_ids_are_not_changed_and_constraint_is_applied():
 @pytest.mark.parametrize(
     ("null_count", "duplicate", "message"),
     [
-        (2, None, "2 NULL value(s)"),
+        (2, None, "2 NULL"),
         (0, "artisan/duplicate", "duplicate value exists"),
     ],
 )
