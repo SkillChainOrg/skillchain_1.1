@@ -212,6 +212,9 @@ def generate_did_document(
     doc: dict = {
         "@context": _DID_CONTEXT,
         "id": did,
+        "controller": did,
+
+    # ── Verification methods ──
 
         # ── Verification methods ─────────────────────────────────────────────
         "verificationMethod": [
